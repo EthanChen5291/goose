@@ -50,6 +50,10 @@ def _show_loading_screen(screen, clock, duration=0.9):
             
 # TMW---
 
+# while noki in middle, zoom camera in for zoom-in mode -> it hits and smooshes noki's face and stays in zoom-in mode
+
+# BLITZ mode: on climax measures, have user type a full sentence with a timer. there are multiple sentences with their own timer.
+
 # make the speed_hitmarker and slow_hitmarker animations (when played) very slightly taller and very slightly skinnier
 
 # plan for repeat words 

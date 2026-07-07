@@ -2,8 +2,8 @@
 
 <img src="assets/images/noki_preview.png" alt="Noki Preview" width="980">
 
-> A rhythm-based typing system that trains touch-typing by syncing input to visual beats.
-> Music becomes interactive typing challenges — making practice engaging and habit-forming.
+
+A rhythm-based typing system that trains touch-typing by syncing input to visual beats. Converts audio files into interactive typing levels — making practice individualized and habit-forming.
 
 ## 🌟 Features
 
