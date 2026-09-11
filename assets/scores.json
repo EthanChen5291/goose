@@ -1,17 +1,38 @@
 {
   "Disturbing the Peace.mp3": {
-    "classic": 77161,
+    "classic": 620671,
     "master": 133378,
-    "demon": 20150
+    "demon": 20150,
+    "classic_stats": {
+      "accuracy": 84.0408163265306,
+      "grade": "B",
+      "stars": 1,
+      "max_combo": 41,
+      "misses": 16
+    }
   },
   "Playful Massacre.mp3": {
-    "classic": 47085,
-    "master": 97450
+    "classic": 292770,
+    "master": 97450,
+    "classic_stats": {
+      "accuracy": 37.93650793650793,
+      "grade": "D",
+      "stars": 0,
+      "max_combo": 27,
+      "misses": 109
+    }
   },
   "Scorpion.mp3": {
-    "classic": 103400,
+    "classic": 110829,
     "master": 187295,
-    "demon": 45160
+    "demon": 45160,
+    "classic_stats": {
+      "accuracy": 20.107913669064747,
+      "grade": "D",
+      "stars": 0,
+      "max_combo": 49,
+      "misses": 216
+    }
   },
   "Catch Catch.mp3": {
     "classic": 73216,
@@ -19,19 +40,42 @@
     "demon": 42405
   },
   "Fluffing A Duck.mp3": {
-    "classic": 17802
+    "classic": 17802,
+    "classic@letters": 20368,
+    "classic@letters_stats": {
+      "accuracy": 18.235294117647058,
+      "grade": "D",
+      "stars": 0,
+      "max_combo": 1,
+      "misses": 13
+    }
   },
   "Malo Kart.mp3": {
     "classic": 55272
   },
   "Decisive Battle.mp3": {
     "master": 95003,
-    "demon": 70550
+    "demon": 70550,
+    "classic@letters": 26654,
+    "classic@letters_stats": {
+      "accuracy": 34.5,
+      "grade": "D",
+      "stars": 0,
+      "max_combo": 5,
+      "misses": 9
+    }
   },
   "ICARIUS.mp3": {
-    "classic": 103501,
+    "classic": 181349,
     "master": 99769,
-    "journey": 64206
+    "journey": 64206,
+    "classic_stats": {
+      "accuracy": 81.66666666666667,
+      "grade": "B",
+      "stars": 1,
+      "max_combo": 25,
+      "misses": 6
+    }
   },
   "tidalwave.mp3": {
     "master": 144850,
@@ -68,7 +112,15 @@
   "Takedown - Huntrix.mp3": {
     "master": 181200,
     "classic": 69160,
-    "demon": 52148
+    "demon": 52148,
+    "classic@letters": 206187,
+    "classic@letters_stats": {
+      "accuracy": 82.24489795918367,
+      "grade": "B",
+      "stars": 1,
+      "max_combo": 61,
+      "misses": 11
+    }
   },
   "Ed Sheeran  Shape of You (Lyrics).mp3": {
     "classic": 70718
@@ -130,6 +182,14 @@
     "demon": 147439
   },
   "Terraria Calamity Mod Music - UNIVERSAL COLLAPSE - Theme of Devourer of Gods (Final Form).wav": {
-    "demon": 147757
+    "demon": 147757,
+    "master": 133949,
+    "master_stats": {
+      "accuracy": 67.97752808988764,
+      "grade": "D",
+      "stars": 0,
+      "max_combo": 39,
+      "misses": 49
+    }
   }
 }

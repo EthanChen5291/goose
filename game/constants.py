@@ -111,3 +111,15 @@ DIFFICULTY_PROFILES = {
         max_slots_per_measure=16, max_words_per_measure=8, max_word_length=4,
     ),
 }
+# --- highway (new play screen)
+
+# seconds an orb is on screen before its slot, per difficulty key
+APPROACH_S = {"journey": 2.0, "classic": 1.6, "master": 1.2, "demon": 0.92}
+TIER_LABEL = {"journey": "EASY", "classic": "FAIR", "master": "HARD", "demon": "DEMON"}
+LIVES = 3
+LIFE_COOLDOWN_S = 2.0
+LIFE_REGROW_STREAK = 25     # notes without a miss that grow a petal back
+NAP_BARS = 4
+RUSH_BARS = 8
+RUSH_CHARGE_PER_CLEAN_WORD = 0.05
+RUSH_THRESHOLD = 0.5

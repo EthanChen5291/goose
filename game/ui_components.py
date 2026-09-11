@@ -6,6 +6,7 @@ import pygame
 import math
 import os
 import random
+import time
 
 from .menu_utils import _FONT
 
@@ -322,34 +323,251 @@ class ImageButton:
 
 # ─── PNG sequence sprite ─────────────────────────────────────────────────────
 
+def _seq_paths(folder: str) -> list[str]:
+    if not os.path.isdir(folder):
+        return []
+    return sorted(os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".png"))
+
+
+def _seq_key(folder: str) -> str:
+    try:
+        st = os.stat(folder)
+        return f"{folder}|{int(st.st_mtime)}|{len(_seq_paths(folder))}"
+    except OSError:
+        return folder
+
+
+def sequence_union_bbox(folders: list[str], step: int = 8, pad: float = 0.02) -> pygame.Rect | None:
+    """The union alpha bounding box over the frames of every folder (cached on disk).
+
+    Sequences that overlay each other (body, eyes, licks) must share one crop so they
+    stay aligned; this is that crop.  Every ``step``-th frame is sampled (plus the first
+    and last of each folder) and the result is padded by ``pad`` of the frame size, so
+    the first run reads a few dozen source frames, not hundreds.
+    """
+    import hashlib
+    import json
+    from .sprites import cache_dir
+    key = hashlib.sha1(("|".join(_seq_key(f) for f in folders) + f"|bbox_v2|{step}|{pad}").encode()).hexdigest()[:12]
+    p = os.path.join(cache_dir("sprites"), f"bbox_{key}.json")
+    if os.path.exists(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                x, y, w, h = json.load(f)
+            return pygame.Rect(x, y, w, h)
+        except Exception:
+            pass
+    union: pygame.Rect | None = None
+    frame: pygame.Rect | None = None
+    for folder in folders:
+        paths = _seq_paths(folder)
+        picks = sorted(set(range(0, len(paths), max(1, step))) | ({0, len(paths) - 1} if paths else set()))
+        for i in picks:
+            surf = pygame.image.load(paths[i])
+            frame = surf.get_rect() if frame is None else frame.union(surf.get_rect())
+            bb = surf.get_bounding_rect(min_alpha=8)
+            union = bb if union is None else union.union(bb)
+    if union is not None and frame is not None:
+        px, py = int(frame.w * pad), int(frame.h * pad)
+        union = union.inflate(2 * px, 2 * py).clip(frame)
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump([union.x, union.y, union.w, union.h], f)
+        except Exception:
+            pass
+    return union
+
+
+class PetalSpinner:
+    """The two-petal loading spinner, drawn on demand while something slow builds.
+
+    ``tick(fraction, label)`` draws one frame (rate-limited to ~30 fps), flips, and
+    pumps events so the window stays responsive.  Used as a progress callback.
+    """
+
+    def __init__(self, screen: pygame.Surface, label: str = "getting Noki ready") -> None:
+        self.screen = screen
+        self.label = label
+        img_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "images")
+        self._petals = []
+        for name in ("petal1.png", "petal2.png"):
+            p = os.path.join(img_dir, name)
+            try:
+                self._petals.append(pygame.transform.smoothscale(pygame.image.load(p).convert_alpha(), (40, 40)))
+            except Exception:
+                self._petals.append(None)
+        self._t0 = time.perf_counter()
+        self._last = 0.0
+        try:
+            self._font = pygame.font.Font(_FONT, 20)
+        except Exception:
+            self._font = pygame.font.Font(None, 22)
+
+    @staticmethod
+    def _angle(tn: float) -> float:
+        if tn < 0.5:
+            p = tn / 0.5
+            return math.pi / 2 - math.pi * (p * p)
+        p = (tn - 0.5) / 0.5
+        return -math.pi / 2 - math.pi * (1.0 - (1.0 - p) ** 4)
+
+    def tick(self, fraction: float = 0.0, label: str | None = None) -> None:
+        now = time.perf_counter()
+        if now - self._last < 1 / 30:
+            return
+        self._last = now
+        el = now - self._t0
+        sw, sh = self.screen.get_size()
+        cx, cy, radius = sw // 2, sh // 2, 50
+        p1 = (60.0 / 45.0) / 0.7
+        periods = (p1, p1 * 0.65)
+        offsets = (0.0, p1 * 0.65 * 0.375)
+        self.screen.fill((6, 5, 11))
+        for img, period, off in zip(self._petals, periods, offsets):
+            if img is None:
+                continue
+            for step in (3, 2, 1):
+                tp = ((el - 0.045 * step + off) % period) / period
+                ga = self._angle(tp)
+                g = pygame.transform.rotate(img, math.degrees(ga))
+                g.set_alpha([120, 60, 25][step - 1])
+                self.screen.blit(g, g.get_rect(center=(int(cx + radius * math.cos(ga)), int(cy - radius * math.sin(ga)))))
+            a = self._angle(((el + off) % period) / period)
+            r = pygame.transform.rotate(img, math.degrees(a))
+            self.screen.blit(r, r.get_rect(center=(int(cx + radius * math.cos(a)), int(cy - radius * math.sin(a)))))
+        txt = self._font.render(label or self.label, True, (120, 120, 140))
+        self.screen.blit(txt, txt.get_rect(center=(cx, cy + 90)))
+        if fraction > 0:
+            bar = pygame.Rect(cx - 90, cy + 118, 180, 4)
+            pygame.draw.rect(self.screen, (40, 40, 52), bar, border_radius=2)
+            pygame.draw.rect(self.screen, (100, 200, 255), (bar.x, bar.y, int(bar.w * min(1.0, fraction)), bar.h), border_radius=2)
+        pygame.display.flip()
+        pygame.event.pump()
+
+
 class PNGSequenceSprite:
     """Plays a sorted sequence of transparent PNGs at a fixed FPS.
 
-    All frames are pre-loaded and optionally scaled at construction time so
-    playback is allocation-free.  Call ``advance(dt)`` each game tick and read
-    ``current`` to get the surface to blit.
+    Frames are scaled once and kept on disk as a single sprite sheet per sequence
+    (plus a JSON sidecar), so the next launch is one image load instead of hundreds
+    of full-size decodes and rescales.  With ``crop`` (a rect in source pixels) the
+    frames are cut to that rect before scaling; ``offset`` is then where the cropped
+    frame's top-left sits inside the full scaled frame, so a caller that positions
+    by the full frame blits at ``full_topleft + offset`` and nothing moves on screen.
+    Call ``advance(dt)`` each game tick and read ``current`` to get the surface.
     """
 
+    SHEET_VERSION = "v1"
+
     def __init__(self, folder: str, fps: float = 30.0,
-                 scale: tuple[int, int] | None = None) -> None:
+                 scale: tuple[int, int] | None = None,
+                 crop: pygame.Rect | None = None,
+                 progress=None) -> None:
         self.fps = fps
         self._acc: float = 0.0
         self._idx: int = 0
         self._frames: list[pygame.Surface] = []
+        self.offset: tuple[int, int] = (0, 0)
+        self.full_size: tuple[int, int] | None = scale
 
-        if not os.path.isdir(folder):
+        paths = _seq_paths(folder)
+        if not paths:
             return
+        if scale is None and crop is None:
+            self._frames = [pygame.image.load(p).convert_alpha() for p in paths]
+            return
+        if not self._load_sheet(folder, paths, scale, crop):
+            self._build(folder, paths, scale, crop, progress)
 
-        paths = sorted(
-            os.path.join(folder, f)
-            for f in os.listdir(folder)
-            if f.lower().endswith(".png")
-        )
-        for path in paths:
-            surf = pygame.image.load(path).convert_alpha()
+    # ── sheet cache ───────────────────────────────────────────────────────
+    def _sheet_paths(self, folder: str, scale, crop) -> tuple[str, str]:
+        import hashlib
+        from .sprites import cache_dir
+        crop_key = f"{crop.x},{crop.y},{crop.w},{crop.h}" if crop is not None else "full"
+        key = hashlib.sha1(f"{_seq_key(folder)}|{scale}|{crop_key}|{self.SHEET_VERSION}".encode()).hexdigest()[:12]
+        d = cache_dir("sprites", "sheets")
+        return os.path.join(d, f"{key}.png"), os.path.join(d, f"{key}.json")
+
+    def _load_sheet(self, folder, paths, scale, crop) -> bool:
+        import json
+        png, meta_p = self._sheet_paths(folder, scale, crop)
+        if not (os.path.exists(png) and os.path.exists(meta_p)):
+            return False
+        try:
+            with open(meta_p, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if meta.get("n") != len(paths):
+                return False
+            sheet = pygame.image.load(png).convert_alpha()
+            cw, ch, cols = meta["cw"], meta["ch"], meta["cols"]
+            self._frames = [sheet.subsurface(pygame.Rect((i % cols) * cw, (i // cols) * ch, cw, ch))
+                            for i in range(meta["n"])]
+            self.offset = tuple(meta.get("offset", (0, 0)))
+            self.full_size = tuple(meta["full"]) if meta.get("full") else scale
+            return True
+        except Exception:
+            self._frames = []
+            return False
+
+    def _build(self, folder, paths, scale, crop, progress=None) -> None:
+        """One pass over the source frames: crop, scale, convert; the sheet is saved in the background."""
+        import json
+        import math
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        n = len(paths)
+        state = {"offset": (0, 0)}
+
+        def prep(path):
+            """Decode, crop and scale one frame (pygame releases the GIL in the C calls)."""
+            surf = pygame.image.load(path)               # convert only the small result, on the main thread
+            sw, sh = surf.get_size()
+            r = surf.get_rect()
+            if crop is not None:
+                r = crop.clip(surf.get_rect())
+                surf = surf.subsurface(r)
             if scale is not None:
-                surf = pygame.transform.smoothscale(surf, scale)
-            self._frames.append(surf)
+                sx, sy = scale[0] / max(1, sw), scale[1] / max(1, sh)
+                if crop is not None:
+                    tw, th = max(1, int(round(r.w * sx))), max(1, int(round(r.h * sy)))
+                    state["offset"] = (int(round(r.x * sx)), int(round(r.y * sy)))
+                else:
+                    tw, th = scale
+                surf = pygame.transform.smoothscale(surf, (tw, th))
+            return surf
+
+        frames: list[pygame.Surface] = []
+        with ThreadPoolExecutor(max_workers=max(2, min(6, (os.cpu_count() or 4) - 1))) as pool:
+            for i, surf in enumerate(pool.map(prep, paths)):
+                frames.append(surf.convert_alpha())
+                if progress is not None and i % 3 == 0:
+                    progress((i + 1) / n)
+        self._frames = frames
+        self.offset = state["offset"]
+        if not frames:
+            return
+        # pack into one sheet and write it on a thread: it is only for the next launch
+        cw, ch = frames[0].get_size()
+        cols = max(1, int(math.ceil(math.sqrt(n))))
+        rows = int(math.ceil(n / cols))
+        try:
+            sheet = pygame.Surface((cols * cw, rows * ch), pygame.SRCALPHA)
+            for i, fr in enumerate(frames):
+                sheet.blit(fr, ((i % cols) * cw, (i // cols) * ch))
+        except Exception:
+            return
+        png, meta_p = self._sheet_paths(folder, scale, crop)
+        meta = {"n": n, "cw": cw, "ch": ch, "cols": cols, "offset": list(self.offset), "full": list(scale) if scale else None}
+
+        def _save():
+            try:
+                pygame.image.save(sheet, png)
+                with open(meta_p, "w", encoding="utf-8") as f:     # sidecar last: no sidecar, no cache hit
+                    json.dump(meta, f)
+            except Exception:
+                pass
+
+        threading.Thread(target=_save, daemon=True).start()
 
     @property
     def ready(self) -> bool:

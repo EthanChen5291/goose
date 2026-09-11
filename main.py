@@ -3,14 +3,14 @@ os.environ['SDL_MOUSE_FOCUS_CLICKTHROUGH'] = '1'
 
 import pygame
 import time as _time
-from game.engine import Game
+from game.play import PlaySession
 from game.models import Level
 from game.menu import MenuManager
 from game.menu_utils import _load_scores, _save_scores
 from game.music import MusicManager
 
 
-def _show_loading_screen(screen, clock, duration=0.9):
+def _show_loading_screen(screen, clock, duration=0.35):
     """Brief petal-spinner transition shown when returning to the menu after a level."""
     import random as _random
     from game.ui_components import Petal
@@ -186,6 +186,12 @@ def main():
     info = pygame.display.Info()
     screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.RESIZABLE)
     pygame.display.set_caption("Key Dash")
+    # macOS clamps the window under the menu bar after creation: let that settle so
+    # every screen measures the real surface
+    for _ in range(3):
+        pygame.event.pump()
+        pygame.time.wait(30)
+    screen = pygame.display.get_surface() or screen
     clock = pygame.time.Clock()
 
     music = MusicManager()
@@ -197,7 +203,7 @@ def main():
         if result is None:
             break
 
-        selected, difficulty, word_bank, bpm = result
+        selected, difficulty, word_bank, bpm, mode = (list(result) + ["words"])[:5]
 
         song_name = SONG_NAMES[selected]
         _canon_path = CANON_PATH + song_name
@@ -207,6 +213,7 @@ def main():
             song_path=song_path,
             difficulty=difficulty,
             bpm=bpm,
+            mode=mode,
         )
 
         # ==========================TO DO LIST
@@ -279,16 +286,21 @@ def main():
         # Inner replay loop — keeps replaying the same level until player exits
         while True:
             music.pause_for_game()
-            game = Game(level=level, screen=screen, clock=clock, music=music)
+            game = PlaySession(level=level, screen=screen, clock=clock, music=music)
             game_result = game.run()
             music.resume_from_game()
 
-            # Persist top score for this song + difficulty
+            # Persist top score for this song + difficulty (normalized score; the
+            # accuracy and grade of the best run ride along under "<difficulty>_stats")
             song_key = SONG_NAMES[selected]
             scores   = _load_scores()
-            prev     = scores.get(song_key, {}).get(difficulty, 0)
+            score_key = difficulty if mode == "words" else f"{difficulty}@{mode}"
+            prev     = scores.get(song_key, {}).get(score_key, 0)
             if game.score > prev:
-                scores.setdefault(song_key, {})[difficulty] = game.score
+                scores.setdefault(song_key, {})[score_key] = game.score
+                scores[song_key][score_key + "_stats"] = {
+                    k: game.stats.get(k) for k in ("accuracy", "grade", "stars", "max_combo", "misses")
+                }
                 _save_scores(scores)
 
             if game_result != "replay":

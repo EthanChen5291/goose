@@ -28,6 +28,7 @@ from ..ui_components import (
     DifficultySelector,
     ImageButton,
     PNGSequenceSprite,
+    sequence_union_bbox,
 )
 from ._constants import (
     LS_LEFT_FRAC, LS_BUTTON_HEIGHT, LS_BUTTON_SPACING,
@@ -51,7 +52,7 @@ _ANIMATIONS = os.path.join(
 
 
 class LevelSelect:
-    def __init__(self, screen, song_names, scores=None, canon_names=None):
+    def __init__(self, screen, song_names, scores=None, canon_names=None, progress=None):
         self.screen     = screen
         self.song_names = song_names
         self._scores    = scores or {}
@@ -142,15 +143,19 @@ class LevelSelect:
                 self._noki_loop_w = bw
                 self._noki_loop_h = bh
 
-        self._noki_loop_seq = PNGSequenceSprite(base_dir, fps=30.0, scale=body_scale)
+        # one crop shared by body, eyes and licks so the overlays stay aligned; frames are
+        # cut to it, scaled once and kept as sprite sheets in the user cache
+        seq_dirs = [base_dir] + [os.path.join(_ANIMATIONS, n) for n in ("left", "right", "noki_lick1", "noki_lick2")]
+        crop = sequence_union_bbox(seq_dirs) if body_scale else None
+        self._noki_loop_seq = PNGSequenceSprite(base_dir, fps=30.0, scale=body_scale, crop=crop, progress=progress)
         # Shift noki down so it overlaps the upload button naturally
         self._noki_loop_bottom = loop_bottom + int(sh * 0.13)
 
         eye_scale = body_scale
-        self._leye_seq  = PNGSequenceSprite(os.path.join(_ANIMATIONS, "left"),       fps=30.0, scale=eye_scale)
-        self._reye_seq  = PNGSequenceSprite(os.path.join(_ANIMATIONS, "right"),      fps=30.0, scale=eye_scale)
-        self._lick1_seq = PNGSequenceSprite(os.path.join(_ANIMATIONS, "noki_lick1"), fps=30.0, scale=body_scale)
-        self._lick2_seq = PNGSequenceSprite(os.path.join(_ANIMATIONS, "noki_lick2"), fps=30.0, scale=body_scale)
+        self._leye_seq  = PNGSequenceSprite(seq_dirs[1], fps=30.0, scale=eye_scale, crop=crop, progress=progress)
+        self._reye_seq  = PNGSequenceSprite(seq_dirs[2], fps=30.0, scale=eye_scale, crop=crop, progress=progress)
+        self._lick1_seq = PNGSequenceSprite(seq_dirs[3], fps=30.0, scale=body_scale, crop=crop, progress=progress)
+        self._lick2_seq = PNGSequenceSprite(seq_dirs[4], fps=30.0, scale=body_scale, crop=crop, progress=progress)
 
         self._lick_playing: bool                   = False
         self._active_lick:  PNGSequenceSprite | None = None
@@ -167,45 +172,15 @@ class LevelSelect:
         self.btn_w = self._rank_cx - rank_col_w // 2 - 24 - self.btn_x
         self.diff_cx = self._rank_cx   # preserved for backward compatibility
 
-        self._full_names: list[str]                  = []
-        self.level_buttons:        list[Button]        = []
-        self.difficulty_selectors: list[DifficultySelector] = []
-        self._tab_indices: list[list[int]] = [[], []]
-
-        for i, name in enumerate(song_names):
-            display = os.path.splitext(name)[0]
-            self._full_names.append(display)
-            btn_y = self.list_top + i * (self.button_height + self.button_spacing)
-            self.level_buttons.append(Button(
-                (self.btn_x, btn_y, self.btn_w, self.button_height),
-                display, self.button_font,
-            ))
-            self.difficulty_selectors.append(
-                DifficultySelector(
-                    self._rank_cx,
-                    btn_y + self.button_height // 2,
-                    self.diff_font,
-                )
-            )
-            self._tab_indices[0 if name in self._canon_set else 1].append(i)
-
-        self._recompute_max_scrolls(sh)
-
-        # ── Rename state ──────────────────────────────────────────────────────
-        self._rename_idx:    int | None    = None
-        self._rename_input:  TextInput | None = None
-        self._rename_result: tuple[int, str] = (0, "")
-
         push_amount             = (self.button_height + self.button_spacing) * 0.75
         self._rename_push_px    = push_amount
-        self._rename_push_t     = 0.0
-        self._rename_push_dir   = 0      # +1 opening, -1 closing, 0 idle
-        self._rename_push_elapsed: float = 0.0
 
-        # ── Back button & scroll state ─────────────────────────────────────────
+        # ── Back button ───────────────────────────────────────────────────────
         btn_sz = 52
         self.back_button     = ImageButton(30 + btn_sz // 2, 30 + btn_sz // 2, btn_sz, _EXIT_IMG)
-        self._scroll_offsets = [0, 0]
+
+        # song list, rename and scroll state: everything that depends on the songs or scores
+        self.reset(song_names, self._scores, canon_names)
 
         # ── Tab rects ─────────────────────────────────────────────────────────
         tab_panel_x = div_x + 1
@@ -225,6 +200,50 @@ class LevelSelect:
             self._tab_rects.append(pygame.Rect(
                 tabs_left + t * (tab_w + tab_gap), tab_top, tab_w, tab_h,
             ))
+
+    def reset(self, song_names=None, scores=None, canon_names=None) -> None:
+        """Refresh the song list, scores and transient state without reloading the sprites.
+
+        Returning from a level and finishing an upload call this instead of rebuilding
+        the screen: the Noki sequences are the expensive part and never change.
+        """
+        if song_names is not None:
+            self.song_names = song_names
+        if scores is not None:
+            self._scores = scores
+        if canon_names is not None:
+            self._canon_set = set(canon_names)
+        self._full_names = []
+        self.level_buttons = []
+        self.difficulty_selectors = []
+        self._tab_indices = [[], []]
+        for i, name in enumerate(self.song_names):
+            display = os.path.splitext(name)[0]
+            self._full_names.append(display)
+            btn_y = self.list_top + i * (self.button_height + self.button_spacing)
+            self.level_buttons.append(Button(
+                (self.btn_x, btn_y, self.btn_w, self.button_height),
+                display, self.button_font,
+            ))
+            self.difficulty_selectors.append(
+                DifficultySelector(self._rank_cx, btn_y + self.button_height // 2, self.diff_font)
+            )
+            self._tab_indices[0 if name in self._canon_set else 1].append(i)
+        self._recompute_max_scrolls()
+        # rename, tabs, scroll and hover state start fresh
+        self._rename_idx = None
+        self._rename_input = None
+        self._rename_result = (0, "")
+        self._rename_push_t = 0.0
+        self._rename_push_dir = 0      # +1 opening, -1 closing, 0 idle
+        self._rename_push_elapsed = 0.0
+        self._scroll_offsets = [0, 0]
+        self._active_tab = 0
+        self._tab_lerp = 0.0
+        self._tab_crop_t = 0.0
+        self._sb_drag = False
+        self._upload_hovered = False
+        self._upload_scale = 1.0
 
     # ── Tab crop helpers ──────────────────────────────────────────────────────
 
@@ -537,26 +556,25 @@ class LevelSelect:
 
         # Body (hidden while lick plays)
         if not self._lick_playing:
-            body = self._noki_loop_seq.current
-            if body is not None:
-                self.screen.blit(body, body.get_rect(midbottom=(self._noki_loop_cx, noki_y)))
+            self._blit_seq(self._noki_loop_seq, self._noki_loop_cx, noki_y)
 
         # Lick overlay (replaces body + eyes)
         if self._lick_playing and self._active_lick is not None:
-            lick = self._active_lick.current
-            if lick is not None:
-                self.screen.blit(lick, lick.get_rect(midbottom=(self._noki_loop_cx, noki_y)))
+            self._blit_seq(self._active_lick, self._noki_loop_cx, noki_y)
 
         # Eye overlays (hidden while lick plays)
         if not self._lick_playing:
-            for eye_surf in (self._leye_seq.current, self._reye_seq.current):
-                if eye_surf is not None:
-                    self.screen.blit(eye_surf, eye_surf.get_rect(
-                        midbottom=(
-                            self._noki_loop_cx + self._eye_ox,
-                            noki_y + self._eye_oy,
-                        )
-                    ))
+            for seq in (self._leye_seq, self._reye_seq):
+                self._blit_seq(seq, self._noki_loop_cx + self._eye_ox, noki_y + self._eye_oy)
+
+    def _blit_seq(self, seq, cx: float, bottom: float) -> None:
+        """Blit a sequence's frame as if the full (uncropped) frame sat with its midbottom at (cx, bottom)."""
+        surf = seq.current
+        if surf is None:
+            return
+        fw, fh = seq.full_size or surf.get_size()
+        ox, oy = seq.offset
+        self.screen.blit(surf, (int(cx - fw // 2 + ox), int(bottom - fh + oy)))
 
     def _draw_tabs(self, sw):
         # Live bottom edge of the tab (crops upward as scroll_offset increases)
@@ -731,16 +749,27 @@ class LevelSelect:
         thumb_y    = self._sb_y + int((viewport_h - thumb_h) * self.scroll_offset / ms)
         return pygame.Rect(self._sb_x, thumb_y, self._sb_w, thumb_h)
 
+    _GRADE_ORDER = ["SS", "S", "A", "B", "C", "D"]
+
     def _best_rank(self, song_name: str) -> tuple[str, tuple] | None:
-        """Return (letter, color) for the best score across all difficulties."""
+        """Return (letter, color) for the best run across all difficulties.
+
+        New runs store "<difficulty>_stats" with a grade by accuracy; that grade wins.
+        Scores from before normalized scoring are on another scale, so they only earn
+        a dash ("played"), never a letter they did not reach.
+        """
         song_scores = self._scores.get(song_name, {})
-        if not song_scores:
+        grades = [v.get("grade") for v in song_scores.values()
+                  if isinstance(v, dict) and v.get("grade") in self._GRADE_ORDER]
+        colors = {letter: color for _t, letter, color in RANKS}
+        if grades:
+            best = min(grades, key=self._GRADE_ORDER.index)
+            return best, colors.get(best, colors.get("S", (255, 255, 255)))
+        # a score without stats is from before normalized scoring: played, but on another scale
+        numeric = [v for v in song_scores.values() if isinstance(v, (int, float))]
+        if not numeric or max(numeric) <= 0:
             return None
-        best = max(song_scores.values())
-        for threshold, letter, color in RANKS:
-            if best >= threshold:
-                return letter, color
-        return None
+        return "-", (110, 110, 125)
 
     def _finish_rename(self) -> tuple[int, str] | None:
         """Commit the rename; returns (idx, new_name) or None for a blank entry."""
