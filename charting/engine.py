@@ -1,20 +1,24 @@
 """
 Skeleton & Cells — the chart generator.
 
-Where can a note go?  The skeleton answers (a property of the audio).
-Which whole word fits this rhythm cell?  The fitter answers, per cell, with
-the word pool and the vibe of the section:
+Where can a note go?  The skeleton answers (a property of the audio).  Which
+layer does a phrase follow?  ``charting.layers`` answers: the melody for most
+of a song, a catchy drum or bass figure for a phrase now and then, both at
+once where they are sparse.  Which whole word fits this rhythm cell?  The
+fitter answers, per cell, with the word pool and the vibe of the section.
 
-  * a cell is a stretch of beats whose length follows the section's energy
-    (burst → half a bar, drive/groove → a bar, sustain → two); a word may only
-    occupy the first part of it, so every word is followed by a rest
-  * the letters' slots are the strongest accents of that part, strong beats
-    first (beat 1, beat 3, the backbeats, then an off-beat only when it is a
-    real onset that stands out), capped per tier and never closer than the
-    tier's minimum gap
-  * the word is chosen to match the accent count exactly when it can,
-    with bonuses for plosives on kicks, hand alternation on fast pairs, the
-    teacher's list, and the section's vibe, and penalties for repeats
+Normal is the reference chart, shaped like Keyboard Warrior's (read off its
+reels): a bar-long cell holds one word whose letters sit on the layer's
+onsets, one per eighth where the part is busy, and the next word follows at
+once — the rests are where the music rests.  The other tiers are read off
+Normal rather than being their own charts:
+
+  * Easy keeps the strongest two thirds of Normal's notes (the same times,
+    fewer of them) and a wider gap
+  * Hard keeps every Normal note and adds: the secondary layer where the two
+    parts are both sparse, sixteenths under a slow enough beat, and grace
+    notes — a small note tied to a main one, played as a quick double
+  * Demon is Hard with more of each
 
 Everything is seeded, so the same song + words + difficulty gives the same
 chart on every machine.
@@ -23,14 +27,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from game import constants as C
 from game import models as M
 from game.rhythm import calculate_lead_in
 from . import skeleton as SK
+from .layers import LayerPlan, plan_layers, plan_for_bar, COMBINE
 from .words import build_vocab, WordInfo
 
 
@@ -47,23 +53,51 @@ class Tier:
     short_cell_min_s: float = 0.0   # a half-bar cell shorter than this falls back to the drive cell
 
 
-# Every word is followed by a rest the ear can feel: a cell is (length, playable part, cap).
-# At 120 BPM these give roughly 1.1 / 1.8 / 2.7 / 3.6 letters per second on Easy / Fair / Hard / Demon,
-# and the slots inside a cell are the strongest accents, strong beats first.
+# A tier's ceiling in letters per second, whatever the tempo.  Keyboard Warrior's Expert charts
+# run 1.4–3.9 notes a second (median gap: an eighth); Normal is allowed that range, Easy less,
+# Hard a little more.  The ceiling caps every cell, the gap is raised to 0.7 / ceiling, and
+# sixteenths are only taken when the beat is slow enough for them to be typed.
+MAX_LPS = {"journey": 2.2, "classic": 3.8, "master": 4.2, "demon": 4.6}
+SIXTEENTHS_BELOW_BPM = {"master": 130.0, "demon": 150.0}      # finest = 1 only under these tempos
+THIN_SHARE = {"journey": 0.75}                                # Easy keeps this share of Normal's notes
+EXTRA_PER_BAR = {"master": 2, "demon": 4}                     # more primary-layer notes a bar than Normal
+# grace notes: (max per bar, min beats between two), a small note a sixteenth before a main one
+GRACE = {"master": (1, 2.0), "demon": (2, 1.0)}
+GRACE_OFFSET = (0.07, 0.15)                                   # seconds before the main note
+
+
+def tier_for_bpm(tier: "Tier", bpm: float) -> "Tier":
+    """The tier with its gap and subdivision fitted to the song's tempo."""
+    ceiling = MAX_LPS[tier.key]
+    gap = max(tier.min_gap, 0.6 / ceiling)
+    finest = tier.finest
+    if finest == 1 and bpm > SIXTEENTHS_BELOW_BPM.get(tier.key, 1e9):
+        finest = 2
+    return replace(tier, min_gap=gap, finest=finest)
+
+
+# One word a bar, its letters on the layer's onsets, the next word right after: a cell is
+# (length, playable part, cap).  The playable part leaves the last eighth of the cell as the
+# word boundary; a quiet stretch (sustain) gets a two-bar cell.  Every tier reads these same
+# cells — Easy thins the result, Hard and Demon add to it.
+NORMAL_CELLS = {"burst": (4, 3.6, 8), "drive": (4, 3.6, 8), "groove": (4, 3.6, 7), "sustain": (8, 7.5, 8)}
 TIERS = {
-    "journey": Tier("journey", 0.40, 4, {"burst": (4, 3, 3), "drive": (4, 3, 3), "groove": (8, 6, 4), "sustain": (8, 6, 3)}, 5, True),
-    "classic": Tier("classic", 0.24, 2, {"burst": (2, 1.5, 3), "drive": (4, 3, 4), "groove": (4, 3, 3), "sustain": (8, 6, 5)}, 6, True, (2, 3), 1.0),
-    "master":  Tier("master", 0.16, 1, {"burst": (2, 1.5, 4), "drive": (4, 3.5, 6), "groove": (4, 3, 5), "sustain": (8, 6, 6)}, 8, True, (2, 3, 4)),
-    "demon":   Tier("demon", 0.11, 1, {"burst": (2, 1.75, 5), "drive": (2, 1.5, 4), "groove": (4, 3.5, 7), "sustain": (4, 3, 5)}, 9, True, (2, 3, 4)),
+    "journey": Tier("journey", 0.26, 2, NORMAL_CELLS, 6, True, (2, 3), 1.0),
+    "classic": Tier("classic", 0.17, 2, NORMAL_CELLS, 8, True, (2, 3, 4), 1.0),
+    "master":  Tier("master", 0.15, 1, NORMAL_CELLS, 9, True, (2, 3, 4), 1.0),
+    "demon":   Tier("demon", 0.12, 1, NORMAL_CELLS, 9, True, (2, 3, 4), 1.0),
 }
 
 
 # ── skeleton cache ────────────────────────────────────────────────────────
+SKELETON_VERSION = "v10"     # bump when build_skeleton's output changes; older files are pruned
+
+
 def _skeleton_cache_path(song_path: str, expected_bpm: int | None) -> str:
     from . import _cache_dir, song_fingerprint
     d = os.path.join(_cache_dir(), "skeletons")
     os.makedirs(d, exist_ok=True)
-    return os.path.join(d, f"{song_fingerprint(song_path)}_{expected_bpm or 'auto'}_v7.json")
+    return os.path.join(d, f"{song_fingerprint(song_path)}_{expected_bpm or 'auto'}_{SKELETON_VERSION}.json")
 
 
 def get_skeleton(song_path: str, expected_bpm: int | None = None, progress=None) -> SK.Skeleton:
@@ -112,6 +146,9 @@ def section_vibes(sk: SK.Skeleton, window_bars: int = 4) -> list[str]:
 
 
 # ── cells ─────────────────────────────────────────────────────────────────
+MELODIC_REST_BELOW = 0.30    # a lead cell whose loudest tune onset is under this share of the song's p90 rests
+
+
 @dataclass
 class Cell:
     t0: float
@@ -119,21 +156,61 @@ class Cell:
     bar: int
     vibe: str
     slots: list[SK.Point]
-    cand: list[SK.Point]      # every eligible point in the playable part (for extending by one)
+    cand: list[SK.Point]      # every eligible point of the primary layer (for extending by one)
+    layer: str = "lead"       # the primary layer the cell follows
+    slot_layer: dict = None   # id(point) -> layer each slot was taken from
+    mode: str = "solo"
+
+    def layer_of(self, p: SK.Point) -> str:
+        return (self.slot_layer or {}).get(id(p), self.layer)
 
 
-def build_cells(sk: SK.Skeleton, tier: Tier, vibes: list[str]) -> list[Cell]:
-    """Cut the song into cells by vibe; in each, the slots are the strongest accents of the playable part."""
+def _thin(slots: list[SK.Point], layer_of, share: float, min_gap: float) -> list[SK.Point]:
+    """Easy: the strongest ``share`` of the slots, never closer than ``min_gap``, in time order."""
+    if not slots:
+        return slots
+    keep_n = max(1, int(math.ceil(len(slots) * share)))
+    top = max(p.layer(layer_of(p)) for p in slots) or 1e-6
+    order = sorted(slots, key=lambda p: (-SK.layer_score(p, layer_of(p), p.layer(layer_of(p)) / top), p.t))
+    kept: list[SK.Point] = []
+    for p in order:
+        if len(kept) >= keep_n:
+            break
+        if all(abs(p.t - q.t) >= min_gap for q in kept):
+            kept.append(p)
+    return sorted(kept, key=lambda p: p.t)
+
+
+def _cap(slots: list[SK.Point], layer_of, n: int) -> list[SK.Point]:
+    """The strongest ``n`` of the slots, in time order."""
+    if len(slots) <= n:
+        return slots
+    top = max(p.layer(layer_of(p)) for p in slots) or 1e-6
+    order = sorted(slots, key=lambda p: (-SK.layer_score(p, layer_of(p), p.layer(layer_of(p)) / top), p.t))
+    return sorted(order[:n], key=lambda p: p.t)
+
+
+def build_cells(sk: SK.Skeleton, tier: Tier, vibes: list[str], plans: list[LayerPlan] | None = None) -> list[Cell]:
+    """Cut the song into cells by vibe; in each, the slots are the onsets of the phrase's layer.
+
+    The selection is Normal's, whatever the tier: Easy thins it, Hard and Demon extend it (the
+    secondary layer in a combined phrase, finer subdivisions, more of the primary layer)."""
+    if plans is None:
+        plans = plan_layers(sk, tier.key)
+    normal = tier_for_bpm(TIERS["classic"], sk.bpm)
     cells: list[Cell] = []
     beat = 60.0 / sk.bpm
     b = 0
     n = sk.n_bars
     t_cursor = sk.bar_start[0] if sk.bar_start else 0.0
+    vv = sorted(p.vocal for p in sk.points if p.layer_peak("lead") and p.vocal >= 0.28) or [1.0]
+    lead_p90 = vv[int(len(vv) * 0.9)] or 1.0
+    combine = COMBINE.get(tier.key)
     while b < n:
         vibe = vibes[b]
         cell_beats, play_beats, k = tier.cells[vibe]
         if cell_beats < 4 and cell_beats * beat < tier.short_cell_min_s:
-            cell_beats, play_beats, k = tier.cells["drive"]      # fast song: a half-bar burst would be a two-letter stutter
+            cell_beats, play_beats, k = tier.cells["drive"]
         t0 = t_cursor
         bar_end = sk.bar_start[b + 1] if b + 1 < n else sk.beat_times[-1]
         if cell_beats >= 4:
@@ -146,8 +223,45 @@ def build_cells(sk: SK.Skeleton, tier: Tier, vibes: list[str]) -> list[Cell]:
             next_t = t1
         play_end = min(t1, t0 + play_beats * beat)
         pts = sk.points_in(t0, play_end - 1e-6)
-        slots, cand = SK.select_slots(pts, k, tier.min_gap, tier.finest)
-        cells.append(Cell(t0, t1, b, vibe, slots, cand))
+        plan = plan_for_bar(plans, b)
+        primary = plan.primary if plan else "lead"
+        secondary = plan.secondary if plan else None
+        mode = plan.mode if plan else "solo"
+        bars = max(1.0, (t1 - t0) / (4 * beat))
+        # a tune that goes quiet is a rest, not a cue to fall back on the drums — unless the
+        # phrase combines a second part, which then carries the cell alone
+        if primary == "lead" and pts and max(p.vocal for p in pts) < MELODIC_REST_BELOW * lead_p90:
+            if mode == "combined" and secondary:
+                primary, secondary, mode = secondary, None, "solo"
+            else:
+                cells.append(Cell(t0, t1, b, vibe, [], [], "lead", {}, "rest"))
+                b, t_cursor = next_b, next_t
+                if next_t <= t0 + 1e-6:
+                    b += 1
+                    t_cursor = sk.bar_start[b] if b < n else sk.beat_times[-1]
+                continue
+        # Normal's notes: the primary layer at Normal's gap and grid
+        k_norm = min(k, max(1, int(math.ceil(MAX_LPS["classic"] * (play_end - t0)))))
+        slots, cand = SK.select_layer_slots(pts, primary, k_norm, normal.min_gap, normal.finest)
+        slot_layer = {id(p): primary for p in slots}
+        cap_tier = max(1, int(math.ceil(MAX_LPS[tier.key] * (play_end - t0))))
+        if mode == "combined" and secondary and combine is not None and slots:
+            room = min(int(math.ceil(combine[1] * bars)), int(math.ceil(combine[2] * bars)) - len(slots), cap_tier - len(slots))
+            extra, _ = SK.select_layer_slots(pts, secondary, room, tier.min_gap, tier.finest, taken=slots)
+            for p in extra:
+                slot_layer[id(p)] = secondary
+            slots = sorted(slots + extra, key=lambda p: p.t)
+        layer_of = lambda p, sl=slot_layer, pr=primary: sl.get(id(p), pr)
+        if tier.key in THIN_SHARE:
+            slots = _thin(slots, layer_of, THIN_SHARE[tier.key], tier.min_gap)
+        elif tier.key in EXTRA_PER_BAR and slots:
+            want = len(slots) + int(EXTRA_PER_BAR[tier.key] * bars)
+            more, _ = SK.select_layer_slots(pts, primary, want - len(slots), tier.min_gap, tier.finest, taken=slots)
+            for p in more:
+                slot_layer[id(p)] = primary
+            slots = sorted(slots + more, key=lambda p: p.t)
+        slots = _cap(slots, layer_of, cap_tier)
+        cells.append(Cell(t0, t1, b, vibe, slots, cand, primary, slot_layer, mode))
         b, t_cursor = next_b, next_t
         if next_t <= t0 + 1e-6:      # safety
             b += 1
@@ -159,10 +273,14 @@ def build_cells(sk: SK.Skeleton, tier: Tier, vibes: list[str]) -> list[Cell]:
 def _score_word(w: WordInfo, slots: list[SK.Point], cell: Cell, recent: list[str], tier: Tier, rng: random.Random) -> float:
     n = len(slots)
     s = 0.0
+    # the word's letters *are* the notes: an exact fit outranks any other bonus; one letter
+    # more takes a real extra onset, one fewer drops a note the ear expects
     if w.n == n:
-        s += 2.5
-    elif abs(w.n - n) == 1:
+        s += 4.0
+    elif w.n == n + 1:
         s += 1.0
+    elif w.n == n - 1:
+        s += 0.4
     else:
         s -= 1.5 * abs(w.n - n)
     m = min(w.n, n)
@@ -198,9 +316,10 @@ def _extend_slots(cell: Cell, slots: list[SK.Point], tier: Tier) -> list[SK.Poin
     used = {id(p) for p in slots}
     if not cell.cand:
         return None
-    max_conf = max(p.conf for p in cell.cand) or 1e-6
+    layer = cell.layer
+    top = max(p.layer(layer) for p in cell.cand) or 1e-6
     best = None
-    for p in sorted(cell.cand, key=lambda q: -SK.slot_score(q, q.conf / max_conf)):
+    for p in sorted(cell.cand, key=lambda q: -SK.layer_score(q, layer, q.layer(layer) / top)):
         if id(p) in used:
             continue
         if all(abs(p.t - q.t) >= tier.min_gap for q in slots):
@@ -208,6 +327,8 @@ def _extend_slots(cell: Cell, slots: list[SK.Point], tier: Tier) -> list[SK.Poin
             break
     if best is None:
         return None
+    if cell.slot_layer is not None:
+        cell.slot_layer[id(best)] = layer
     return sorted(slots + [best], key=lambda p: p.t)
 
 
@@ -282,14 +403,12 @@ def emit_events(fits, sk: SK.Skeleton, tier: Tier) -> list[M.CharEvent]:
     events: list[M.CharEvent] = []
     beat = 60.0 / sk.bpm
     word_id = 0
-    sustain_by_t = {round(o, 2): d for o, d in sk.sustains}
     last_time = -1e9
     for cell, w, slots in fits:
         if w is None or not slots:
             continue
         word_id += 1
         n = min(w.n, len(slots))
-        # if the word is longer than the slots (n-1 case never happens here) — handled in fit
         for i in range(n):
             p = slots[i]
             if p.t - last_time < tier.min_gap * 0.8:
@@ -301,7 +420,7 @@ def emit_events(fits, sk: SK.Skeleton, tier: Tier) -> list[M.CharEvent]:
                         hold = d
                         break
             events.append(M.CharEvent(
-                char=w.text[i], timestamp=float(SK.hit_time(p)), word_text=w.text, char_idx=i,
+                char=w.text[i], timestamp=float(SK.hit_time(p, cell.layer_of(p))), word_text=w.text, char_idx=i,
                 beat_position=float(p.bar * 4 + p.beat + p.sub / 4), section=int(p.bar // 4),
                 weight=p.metric, word_id=word_id, hold_duration=hold,
             ))
@@ -332,13 +451,17 @@ def _space_sections(events: list[M.CharEvent], min_gap: float) -> list[M.CharEve
 
     Inside a word the onset snapping can pull two letters together: the later one is nudged
     forward.  Where sections meet, the later note's whole word is dropped instead, so no word
-    is left with a missing letter.
+    is left with a missing letter.  A grace note and its main note are one gesture and are
+    left alone.
     """
     floor = min_gap * 0.75
     drop: set[int] = set()
     prev = None
     for e in events:
         if e.is_rest or not e.char or e.word_id in drop:
+            continue
+        if e.section_kind == "grace" or (prev is not None and prev.section_kind == "grace"):
+            prev = e
             continue
         if prev is not None and e.timestamp - prev.timestamp < floor:
             if e.word_id == prev.word_id:
@@ -353,35 +476,99 @@ def _space_sections(events: list[M.CharEvent], min_gap: float) -> list[M.CharEve
     return events
 
 
+# ── grace notes ───────────────────────────────────────────────────────────
+def add_graces(events: list[M.CharEvent], sk: SK.Skeleton, tier: Tier, plans: list[LayerPlan]) -> int:
+    """Hard and Demon: a small note a sixteenth before a main note, typed as a quick double.
+
+    A grace is only added where the audio has a pickup — an onset of one of the phrase's layers
+    (or a clear full-mix onset) on the sixteenth before the note — and where there is room: no
+    other note inside the tier's gap before it, at most ``GRACE`` per bar, a hold or a section
+    note never.  Returns how many were added.
+    """
+    rule = GRACE.get(tier.key)
+    if rule is None or not events:
+        return 0
+    max_per_bar, min_beats = rule
+    beat = 60.0 / sk.bpm
+    sixteenth = beat / 4
+    offset = min(GRACE_OFFSET[1], sixteenth)
+    if offset < GRACE_OFFSET[0]:
+        return 0
+    pts = sk.points
+    chars = sorted((e for e in events if not e.is_rest and e.char), key=lambda e: e.timestamp)
+    per_bar: dict[int, int] = {}
+    last_grace_t = -1e9
+    added: list[M.CharEvent] = []
+    for i, e in enumerate(chars):
+        if e.section_kind not in ("", "letters") or e.hold_duration > 0:
+            continue
+        bar = int(e.beat_position // 4)
+        if per_bar.get(bar, 0) >= max_per_bar or e.timestamp - last_grace_t < min_beats * beat:
+            continue
+        idx = int(round(e.beat_position * 4))
+        if idx - 1 < 0 or idx >= len(pts) or pts[idx].bar != bar:
+            continue
+        q = pts[idx - 1]
+        plan = plan_for_bar(plans, bar)
+        layers = plan.layers() if plan else ["lead"]
+        pickup = any(q.layer_peak(l) and q.layer(l) >= 0.40 for l in layers) or (q.peak and q.full >= 0.6)
+        if not pickup:
+            continue
+        g_t = e.timestamp - offset
+        prev = chars[i - 1] if i > 0 else None
+        # the note before may sit closer than the tier's gap (a flam after an eighth is the point),
+        # but never so close that three presses blur into one
+        if prev is not None and g_t - prev.timestamp < max(0.08, 0.55 * tier.min_gap):
+            continue
+        g = e.copy()
+        g.timestamp = float(g_t)
+        g.section_kind = "grace"
+        g.hold_duration = 0.0
+        g.weight = 0
+        g.hit = False
+        added.append(g)
+        per_bar[bar] = per_bar.get(bar, 0) + 1
+        last_grace_t = e.timestamp
+    events.extend(added)
+    events.sort(key=lambda e: (e.timestamp, e.is_rest))
+    return len(added)
+
+
 def _seed(song_path: str, words: list[str], difficulty: str) -> int:
     from . import song_fingerprint, GENERATOR_VERSION
     h = hashlib.sha1((song_fingerprint(song_path) + "|".join(sorted(words)) + difficulty + GENERATOR_VERSION).encode()).hexdigest()
     return int(h[:12], 16)
 
 
+def _layers_meta(plans: list[LayerPlan]) -> list:
+    return [[round(pl.t0, 3), round(pl.t1, 3), pl.primary, pl.secondary or "", pl.mode] for pl in plans]
+
+
 def chart_song(level: M.Level, song_path: str, progress=None) -> dict:
-    tier = TIERS.get(level.difficulty, TIERS["classic"])
     expected = level.bpm
     sk = get_skeleton(song_path, expected, progress=progress)
+    tier = tier_for_bpm(TIERS.get(level.difficulty, TIERS["classic"]), sk.bpm)
     song = M.Song(sk.bpm, int(sk.duration), song_path, list(sk.beat_times))
     rng = random.Random(_seed(song_path, level.word_bank, level.difficulty + level.mode))
+    vibes = section_vibes(sk)
+    plans = plan_layers(sk, tier.key)
     if level.mode == "letters":
         from .letters import plan_letters, focus_letters
         letters = focus_letters(level.word_bank)
-        events = plan_letters(sk, tier.key, letters, rng, section_vibes(sk))
+        events = plan_letters(sk, tier, letters, rng, vibes, plans)
         measure = 60.0 / sk.bpm * 4
         events = [e for e in events if e.timestamp <= sk.duration - measure]
+        n_graces = add_graces(events, sk, tier, plans)
         if events:
             events.append(M.CharEvent(char="", timestamp=events[-1].timestamp + measure, word_text="", char_idx=-1,
                                       beat_position=0.0, section=0, is_rest=True))
-        vibes = section_vibes(sk)
         meta = {"tier": tier.key, "bars": sk.n_bars, "mode": "letters", "letters": letters,
-                "notes": sum(1 for e in events if not e.is_rest), "duets": [],
+                "notes": sum(1 for e in events if not e.is_rest), "graces": n_graces, "duets": [],
                 "bar_vibes": list(vibes), "bar_start": [float(t) for t in sk.bar_start],
-                "bar_energy": [round(float(x), 3) for x in sk.bar_energy], "phrases": []}
+                "bar_energy": [round(float(x), 3) for x in sk.bar_energy], "phrases": [],
+                "layers": _layers_meta(plans)}
         return {"song": song, "events": events, "lead_in": calculate_lead_in(sk.beat_times), "meta": meta, "skeleton": sk}
-    vibes = section_vibes(sk)
-    cells = build_cells(sk, tier, vibes)
+    cells = build_cells(sk, tier, vibes, plans)
     # duet sections: reserved spans the word fitter skips (plus one bar of grace before)
     from .duet import find_spans, plan_span
     from .sections import plan_phrases, plan_pattern, plan_anchor, add_holds
@@ -410,7 +597,7 @@ def chart_song(level: M.Level, song_path: str, progress=None) -> dict:
             p_events = plan_pattern(sk, ph, tier.key, focus, rng, next_word_id, vibes, tier.min_gap, tier.finest)
         else:
             p_events = plan_anchor(sk, ph, tier, focus, rng, next_word_id, vocab, vibes,
-                                   fit_words, emit_events, build_cells)
+                                   fit_words, emit_events, lambda sk_, tier_, vibes_: build_cells(sk_, tier_, vibes_, plans))
         if not p_events:
             ph.kind = "words"          # nothing fit: the phrase simply rests
             continue
@@ -419,6 +606,7 @@ def chart_song(level: M.Level, song_path: str, progress=None) -> dict:
     add_holds(events, tier.key, sk, vibes, rng)
     events.sort(key=lambda e: (e.timestamp, e.is_rest))
     events = _space_sections(events, tier.min_gap)
+    n_graces = add_graces(events, sk, tier, plans)
     # trim the last bar and pad a rest
     measure = 60.0 / sk.bpm * 4
     cutoff = sk.duration - measure
@@ -432,9 +620,13 @@ def chart_song(level: M.Level, song_path: str, progress=None) -> dict:
     meta = {"tier": tier.key, "bars": sk.n_bars, "cells": len(cells), "words": n_words,
             "notes": sum(1 for e in events if not e.is_rest),
             "holds": sum(1 for e in events if not e.is_rest and e.hold_duration > 0),
+            "graces": n_graces,
             "vibes": {v: vibes.count(v) for v in set(vibes)},
             "bar_vibes": list(vibes), "bar_start": [float(t) for t in sk.bar_start],
             "bar_energy": [round(float(x), 3) for x in sk.bar_energy],
-            "phrases": [[ph.t0, ph.t1, ph.kind, ph.bar0, ph.bar1] for ph in phrases],
+            "phrases": [[ph.t0, ph.t1, ph.kind, ph.bar0, ph.bar1,
+                         {"holds": ph.extra.get("holds", []), "voices": ph.extra.get("voices", [])} if ph.kind == "anchor" else {}]
+                        for ph in phrases],
+            "layers": _layers_meta(plans),
             "duets": [[s.t0, s.t1, s.shape, s.bar0, s.bar1] for s in spans]}
     return {"song": song, "events": events, "lead_in": lead_in, "meta": meta, "skeleton": sk}

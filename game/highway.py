@@ -27,7 +27,8 @@ from . import keyboard as KB
 from . import models as M
 from .layout import Layout, LANE_W, HIGHWAY_X0, HIGHWAY_CX, DESIGN_W, DESIGN_H
 from .sprites import (OrbCache, NoteSprites, load_noki_frames, render_text, blur, multiply_alpha,
-                      glow_disk, petal_surface)
+                      glow_disk, petal_surface, aa_circle, aa_rounded_rect, aa_capsule_v, aa_line,
+                      beat_bounce, bounce_scale, faded_text, STAR_R_STEP)
 
 WHITE = (255, 255, 255)
 STAMP_COLORS = {
@@ -44,12 +45,28 @@ BG_LEVELS = 8                # baked steps between BG_CENTER and BG_HOT
 ENERGY = {"sustain": 0.12, "groove": 0.40, "drive": 0.70, "burst": 1.0}
 MILESTONES = (25, 50, 100, 150, 200, 300, 400, 500)
 SECTION_TAG = {"pattern": "BUILD", "anchor": "HOLD"}
+# a phrase handed to another instrument (the chart leaves the melody for a riff) gets a tag too
+LAYER_TAG = {"bass": "BASS", "kick": "DRUMS", "snare": "DRUMS", "hat": "HATS", "lead": "MELODY"}
 BG_EDGE = (7, 6, 13)         # the corners
 # Falling notes are drawn as the blueprint orb (white disk, thin lane-colored ring, soft halo on
 # strong beats); the author's note PNG has a wide flat halo that reads bulky next to the figure.
 # Set to "sprite" to fall back to noki_note_<color>.png.  The press animation is always the author's.
 NOTE_ART = "orb"
 STAR_LIFE = 0.38         # seconds the press burst lives
+SLOT_LINE_W = 7          # design px: the white line Noki stands on
+# The beat bounce: how hard the orbs pulse on each beat of the bar (1 · 2 · 3 · 4)
+BOUNCE_AMP = (1.0, 0.7, 0.85, 0.7)
+# Drops are read off the chart's per-bar energy: a bar that jumps well above the two bars
+# before it is a drop.  A big jump (or the first bar of a burst) is a *large* shockwave; a
+# smaller step up into a loud bar, or a new four-bar phrase inside a burst that lifts again,
+# is a *small* one.  Spacing keeps them meaningful: never two in the same breath.
+DROP_LARGE_RISE = 0.20
+DROP_LARGE_MIN_E = 0.55
+DROP_SMALL_RISE = 0.09
+DROP_SMALL_MIN_E = 0.40
+DROP_PHRASE_RISE = 0.04
+DROP_LARGE_GAP_BARS = 8
+DROP_ANY_GAP_BARS = 2
 
 
 def weight_of_time(song_t: float, beat_times: list[float], bpm: float) -> int:
@@ -145,17 +162,23 @@ class HighwayRenderer:
         self.bar_vibes: list[str] = []
         self.bar_t: list[float] = []
         self.phrases: list[tuple[float, float, str]] = []
+        self.layer_plan: list[tuple[float, float, str, str, str]] = []
         self._energy_s = 0.4            # smoothed energy the visuals follow
         self._phrase_i = -1
         self.drop_t = -9.0              # the last drop (a jump into a burst)
+        self.drop_size = 1.0            # 1 for a large drop's flash, less for a small one
+        self.drops: list[tuple[float, str]] = []     # (chart time, "large" | "small"), from set_sections
+        self._drop_i = 0
         self.shockwaves: list[dict] = []
         self.dust: list[dict] = []
         self.milestone: tuple[int, float] | None = None
-        # the anchor hold on screen
-        self.anchor_ev: M.CharEvent | None = None
-        self.anchor_t0 = -9.0
-        self.anchor_end_t = -9.0        # when the last anchor finished (gold fade)
-        self.anchor_break_t = -9.0
+        playable = [e.timestamp for e in self.rhythm.beat_map if not e.is_rest and e.char]
+        self._first_note_t = min(playable) if playable else 0.0
+        self._warm_caches()
+        # the holds on screen: one per lane, and a short fade (gold done / red broken) per lane
+        self.anchors: dict[int, M.CharEvent] = {}
+        self.anchor_fades: dict[int, tuple[float, str]] = {}    # lane -> (t, "done" | "broke")
+        self.anchor_end_t = -9.0        # when the last anchor finished (keeps the HOLD tag a moment)
 
     def set_layout(self, layout: Layout) -> None:
         """The window changed size: rebake everything that depends on pixels, keep every bit of state."""
@@ -179,6 +202,64 @@ class HighwayRenderer:
         self.bar_vibes = list(meta.get("bar_vibes", []))
         self.bar_t = [float(t) + li for t in meta.get("bar_start", [])]
         self.phrases = [(float(p[0]) + li, float(p[1]) + li, str(p[2])) for p in meta.get("phrases", [])]
+        # layer plan: (t0, t1, primary, secondary, mode); only the "alt" phrases are labelled
+        self.layer_plan = [(float(p[0]) + li, float(p[1]) + li, str(p[2]), str(p[3]), str(p[4])) for p in meta.get("layers", [])]
+        self.drops = self._find_drops([float(x) for x in meta.get("bar_energy", [])], self.bar_vibes, self.bar_t)
+        self._drop_i = 0
+
+    @staticmethod
+    def _find_drops(energy: list[float], vibes: list[str], bar_t: list[float]) -> list[tuple[float, str]]:
+        """Where the song drops, in chart time, each tagged large or small.
+
+        A bar's *rise* is its energy over the mean of the two bars before it.  A **large** drop
+        is a big rise into a loud bar, or the bar where the song steps into a burst (the
+        chorus, the drop proper — the per-bar energy often plateaus before it, so the vibe
+        change is the signal there).  A **small** drop is a modest rise into a driving bar, a
+        step up the vibe ladder, a new phrase inside a burst that lifts again, or the eight-bar
+        mark of a long burst that has not sagged — the second and third hits of a dramatic
+        chorus.  Large drops keep eight bars apart and nothing fires within two bars of
+        anything else, so every shockwave marks something you can hear; a large blocked by the
+        spacing becomes a small one.  A rise the bar before a burst defers to the burst.
+        """
+        n = min(len(energy), len(bar_t))
+        out: list[tuple[float, str]] = []
+        if n < 2:
+            return out
+        order = {"sustain": 0, "groove": 1, "drive": 2, "burst": 3}
+        last_large = -99
+        last_any = -99
+        for b in range(0, n):
+            v = vibes[b] if b < len(vibes) else "groove"
+            pv = vibes[b - 1] if 0 < b < len(vibes) else ("sustain" if b == 0 else v)
+            if b == 0:
+                rise = 0.0
+            else:
+                prev = energy[max(0, b - 2):b]
+                rise = energy[b] - sum(prev) / len(prev)
+            into_burst = v == "burst" and pv != "burst"
+            step_up = order.get(v, 1) > order.get(pv, 1)
+            next_v = vibes[b + 1] if b + 1 < len(vibes) else v
+            if not into_burst and v != "burst" and next_v == "burst":
+                continue                              # the fill before the drop: let the drop have it
+            large = into_burst or (rise >= DROP_LARGE_RISE and energy[b] >= DROP_LARGE_MIN_E)
+            small = (rise >= DROP_SMALL_RISE and energy[b] >= DROP_SMALL_MIN_E and v in ("drive", "burst")) \
+                or (step_up and rise >= DROP_PHRASE_RISE and energy[b] >= DROP_SMALL_MIN_E) \
+                or (b % 4 == 0 and v == "burst" and rise >= DROP_PHRASE_RISE) \
+                or (b % 8 == 0 and v == "burst" and b > 0 and energy[b] >= energy[b - 1] - 0.01)
+            if large and b - last_large >= DROP_LARGE_GAP_BARS and b - last_any >= DROP_ANY_GAP_BARS:
+                out.append((bar_t[b], "large"))
+                last_large = last_any = b
+            elif (large or small) and b - last_any >= DROP_ANY_GAP_BARS:
+                out.append((bar_t[b], "small"))
+                last_any = b
+        if not any(s == "large" for _t, s in out):
+            # a song that never steps into a burst: its loudest rise is the drop
+            best = max(range(1, n), key=lambda b: energy[b] - energy[b - 1], default=None)
+            if best is not None and energy[best] - energy[best - 1] >= DROP_SMALL_RISE:
+                out = [(t, s) for (t, s) in out if abs(t - bar_t[best]) > 1e-6]
+                out.append((bar_t[best], "large"))
+        out.sort()
+        return out
 
     def energy_at(self, t: float) -> float:
         """0..1 from the vibe of the bar under ``t``, crossfading over the bar's last beat."""
@@ -195,6 +276,12 @@ class HighwayRenderer:
             if k > 0:
                 cur = cur + (nxt - cur) * min(1.0, k)
         return cur
+
+    def layer_at(self, t: float):
+        for t0, t1, prim, sec, mode in getattr(self, "layer_plan", []):
+            if t0 <= t < t1:
+                return t0, t1, prim, sec, mode
+        return None
 
     def phrase_at(self, t: float):
         for i, (t0, t1, kind) in enumerate(self.phrases):
@@ -329,7 +416,15 @@ class HighwayRenderer:
             pygame.draw.lines(surf, (*col, 28), False, curve, max(2, L.S(4)))
             surf = blur(surf, 2, 6)
             pygame.draw.aalines(surf, (*col, 55), False, curve)
-            self.ribbons.append((surf.convert_alpha(), 0))
+            # keep only the strip the curve lives in: blitting (and fading) a full-screen surface
+            # for a ribbon 200 px wide was the hitch on every downbeat
+            bb = surf.get_bounding_rect(min_alpha=1)
+            bb = bb.inflate(4, 4).clip(surf.get_rect())
+            strip_s = surf.subsurface(bb).copy().convert_alpha()
+            # the pulse is baked as eight alpha levels: a plain per-pixel-alpha blit each frame
+            # instead of the slow surface-alpha-over-per-pixel-alpha path
+            levels = [multiply_alpha(strip_s, 0.55 + 0.45 * i / 7) for i in range(8)]
+            self.ribbons.append((levels, bb.topleft))
 
         # slot glow strip, full width: a tight symmetric falloff around the line rather than a
         # blurred rectangle, which left a grey smear hanging under the highway
@@ -352,6 +447,27 @@ class HighwayRenderer:
         self.lines_overlay = pygame.Surface((W, H), pygame.SRCALPHA)
         self.petal_img = petal_surface(L.S(16), KB.lane_color(0))
         self.glyph_glow_cache: dict[tuple, pygame.Surface] = {}
+        # the shockwave layer: rings are drawn at a fraction of the window size and scaled up
+        # once per frame, so a ring the width of the screen costs the same as a small one (the
+        # old way baked a supersampled ring the size of the ring every frame — a 100 ms hitch)
+        self._fx_factor = 4
+        self._fx_layer = pygame.Surface((max(2, W // self._fx_factor), max(2, H // self._fx_factor)), pygame.SRCALPHA)
+        self._ring_layer = pygame.Surface((W, H), pygame.SRCALPHA).convert_alpha()   # drop rings, full res
+        self._fx_dists: dict[tuple, object] = {}
+        # the rush bar: an anti-aliased track and border, the stripes drawn 4× and scaled down
+        bx, by, bw, bh = L.RUSH_BAR
+        rw, rh, rrad = L.S(bw), L.S(bh), L.S(6)
+        self.rush_track = aa_rounded_rect(rw, rh, rrad, (26, 26, 38))
+        self.rush_border = aa_rounded_rect(rw, rh, rrad, (90, 90, 110), 255, 1)
+        ss = 4
+        bar = pygame.Surface((rw * ss, rh * ss), pygame.SRCALPHA)
+        bar.fill((184, 162, 74, 255))
+        step = max(4, L.S(18)) * ss
+        hh = rh * ss
+        for sx in range(-hh, rw * ss + hh, step):      # diagonal gold stripes, as in the figure
+            pygame.draw.polygon(bar, (*KB.GOLD, 255), [(sx, hh), (sx + hh, 0), (sx + hh + step // 2, 0), (sx + step // 2, hh)])
+        self.rush_fill_full = pygame.transform.smoothscale(bar, (rw, rh))
+        self._rush_fills: dict[int, pygame.Surface] = {}
 
     @staticmethod
     def _bezier(p: list[tuple[int, int]], n: int) -> list[tuple[int, int]]:
@@ -391,12 +507,14 @@ class HighwayRenderer:
                 self._lock_t = t
                 self._spawn_sparks(HIGHWAY_CX, self.L.slot_y - 200, 24, KB.GOLD, spread=700)
                 self.rush_charge = min(1.0, self.rush_charge + 0.25)
-        else:
-            self._fly_glyph(ev, x, y, t)
+        elif ev.section_kind != "grace":
+            self._fly_glyph(ev, x, y, t)         # the main note carries the letter up; a grace only sparks
         self.combo_tier = 1 + (self.rhythm.combo >= 10) + (self.rhythm.combo >= 25) + (self.rhythm.combo >= 50)
         if self.rhythm.combo in MILESTONES:
             self.milestone = (self.rhythm.combo, t)
             self._spawn_sparks(HIGHWAY_CX, self.L.COMBO_POS[1], 16, KB.GOLD if rush_now else col, spread=600)
+            self.shockwaves.append({'t0': t, 'x': self.L.COMBO_POS[0], 'y': self.L.COMBO_POS[1], 'col': KB.GOLD,
+                                    'dur': 0.5, 'r0': 80, 'r1': 340, 'w0': 5, 'a0': 0.5})
 
     def _hit_anim(self, lane: int, x: float, y: float, t: float, judgment: str = 'good',
                   color: tuple | None = None) -> None:
@@ -421,15 +539,16 @@ class HighwayRenderer:
 
     def on_anchor_start(self, ev: M.CharEvent, judgment: str, offset_ms: float, t: float) -> None:
         lane, x, y = self._ev_xy(ev)
-        self.anchor_ev = ev
-        self.anchor_t0 = t
+        self.anchors[lane] = ev
+        self.anchor_fades.pop(lane, None)
         self.ring_hit_t[lane] = t
         self._hit_anim(lane, x, y, t, judgment, KB.lane_color(lane))
         self._stamp(judgment, x, y, offset_ms, t)
 
     def on_anchor_complete(self, ev: M.CharEvent, judgment: str, t: float) -> None:
         lane, x, y = self._ev_xy(ev)
-        self.anchor_ev = None
+        self.anchors.pop(lane, None)
+        self.anchor_fades[lane] = (t, "done")
         self.anchor_end_t = t
         self._hit_anim(lane, x, y, t, 'perfect', KB.GOLD)
         self._spawn_sparks(x, y, 14, KB.GOLD, spread=520)
@@ -438,8 +557,9 @@ class HighwayRenderer:
         self._streak += 1
 
     def on_anchor_break(self, ev: M.CharEvent, t: float) -> None:
-        self.anchor_ev = None
-        self.anchor_break_t = t
+        lane, _x, _y = self._ev_xy(ev)
+        self.anchors.pop(lane, None)
+        self.anchor_fades[lane] = (t, "broke")
         self.on_miss(ev, t)
 
     def on_miss(self, ev: M.CharEvent, t: float) -> None:
@@ -502,11 +622,25 @@ class HighwayRenderer:
                                 'age': 0.0, 'life': self._rng.uniform(0.3, 0.55), 'r': self._rng.uniform(2, 4),
                                 'col': col if self._rng.random() < 0.5 else WHITE})
 
-    def _drop(self, t: float) -> None:
-        """A phrase just jumped into a burst: one white flash, a ring across the highway, sparks."""
+    def _drop(self, t: float, size: str = "large") -> None:
+        """The song dropped.  Large: a white flash, two rings racing across the whole screen and
+        a spray of sparks; the airbrush jumps hot at once.  Small: one quicker, tighter ring and
+        a lighter flash — a nudge, not a hit."""
+        cx, cy = HIGHWAY_CX, self.L.slot_y
         self.drop_t = t
-        self.shockwaves.append({'t0': t, 'x': HIGHWAY_CX, 'y': self.L.slot_y, 'col': WHITE, 'dur': 0.7, 'r1': 1500})
-        self._spawn_sparks(HIGHWAY_CX, self.L.slot_y, 26, WHITE, spread=900)
+        if size == "large":
+            self.drop_size = 1.0
+            self.shockwaves.append({'t0': t, 'x': cx, 'y': cy, 'col': WHITE, 'dur': 0.80,
+                                    'r0': 60, 'r1': 1500, 'w0': 18, 'a0': 0.75})
+            self.shockwaves.append({'t0': t + 0.09, 'x': cx, 'y': cy, 'col': WHITE, 'dur': 0.60,
+                                    'r0': 40, 'r1': 980, 'w0': 8, 'a0': 0.45})
+            self._spawn_sparks(cx, cy, 26, WHITE, spread=900)
+            self._energy_s = max(self._energy_s, 0.9)
+        else:
+            self.drop_size = 0.4
+            self.shockwaves.append({'t0': t, 'x': cx, 'y': cy, 'col': WHITE, 'dur': 0.48,
+                                    'r0': 50, 'r1': 720, 'w0': 10, 'a0': 0.55})
+            self._spawn_sparks(cx, cy, 10, WHITE, spread=520)
 
     def _spawn_life_petal(self, t):
         lx, ly = self.L.LIVES_POS
@@ -549,6 +683,7 @@ class HighwayRenderer:
     # ── drawing ───────────────────────────────────────────────────────────
     def draw(self, screen: pygame.Surface, t: float, dt: float) -> None:
         L = self.L
+        self._warm_step(t)
         rush = self.rush_active(t)
         if not rush and self.rhythm.rush_active:
             self.rhythm.rush_active = False
@@ -561,12 +696,11 @@ class HighwayRenderer:
         # section energy, smoothed, and the drop when a phrase jumps into a burst
         e_target = self.energy_at(t)
         self._energy_s += (e_target - self._energy_s) * min(1.0, 3.0 * dt)
-        ph = self.phrase_at(t)
-        if ph is not None and ph[0] != self._phrase_i:
-            prev = self._phrase_i
-            self._phrase_i = ph[0]
-            if prev >= 0 and e_target >= 0.95 and self._energy_s < 0.6:
-                self._drop(t)
+        while self._drop_i < len(self.drops) and t >= self.drops[self._drop_i][0]:
+            t_drop, size = self.drops[self._drop_i]
+            self._drop_i += 1
+            if t - t_drop < 0.25:             # never fire one we jumped past
+                self._drop(t_drop if t - t_drop < 0.05 else t, size)
         lvl = int(round(min(1.0, 0.85 * self._energy_s) * (len(self.bg_levels) - 1)))
         screen.blit(self.bg_levels[lvl], (0, 0))
         self._draw_ribbons(screen, t, bar_p, beat_i)
@@ -578,8 +712,8 @@ class HighwayRenderer:
         ov.fill((0, 0, 0, 0))
         self._draw_beat_rows(ov, t)
         self._draw_combo(screen)
-        self._draw_connectors(ov, t, rush)
         screen.blit(ov, (0, 0))
+        self._draw_connectors(screen, t, rush)
         self._draw_slot_line(screen, t, bar_p, rush)
         if t < self.nap_until:
             # the nap: a light veil under the notes, so the highway reads as resting while the notes stay crisp
@@ -608,13 +742,10 @@ class HighwayRenderer:
     # background pieces
     def _draw_ribbons(self, screen, t, bar_p, beat_i):
         L = self.L
-        for k, (surf, _) in enumerate(self.ribbons):
+        for k, (levels, (bx, by)) in enumerate(self.ribbons):
             off = int(L.S(24 + 36 * self._energy_s) * math.sin(math.tau * bar_p + k * math.pi))
-            pulse = 0.55 + 0.45 * max(0.0, 1.0 - ((t - self.line_flash_t) / 0.35)) if beat_i % 4 == 0 else 0.55
-            s = surf.copy() if abs(pulse - 1.0) > 0.02 else surf
-            if s is not surf:
-                s.set_alpha(int(255 * pulse))
-            screen.blit(s, (0, off))
+            pulse = max(0.0, 1.0 - ((t - self.line_flash_t) / 0.35)) if beat_i % 4 == 0 else 0.0
+            screen.blit(levels[min(7, int(round(pulse * 7)))], (bx, by + off))
 
     def _draw_beat_rows(self, ov, t):
         L = self.L
@@ -641,8 +772,7 @@ class HighwayRenderer:
         if combo < 5:
             return
         L = self.L
-        s = render_text("display", L.S(240), str(combo), (255, 255, 255))
-        s = multiply_alpha(s, 0.07)
+        s = faded_text("display", L.S(240), str(combo), (255, 255, 255), 0.07)
         screen.blit(s, s.get_rect(center=(L.X(L.COMBO_POS[0]), L.Y(L.COMBO_POS[1]))))
 
     def _note_y(self, ev, t) -> float:
@@ -662,7 +792,7 @@ class HighwayRenderer:
             out.append(ev)
         return out
 
-    def _draw_connectors(self, ov, t, rush):
+    def _draw_connectors(self, screen, t, rush):
         L = self.L
         col = KB.GOLD if rush else WHITE
         evs = self._visible_events(t)
@@ -683,9 +813,9 @@ class HighwayRenderer:
                     y0 = L.slot_y
                 _l0, x0, _ = self.geom[id(prev)]
                 _l1, x1, _ = self.geom[id(ev)]
-                spts = [(L.X(x0), L.Y(y0)), (L.X(x1), L.Y(y1))]
-                pygame.draw.line(ov, (*col, int(255 * 0.20)), spts[0], spts[1], max(3, L.S(9)))
-                pygame.draw.line(ov, (*col, int(255 * 0.55)), spts[0], spts[1], max(2, L.S(3)))
+                p0, p1 = (L.X(x0), L.Y(y0)), (L.X(x1), L.Y(y1))
+                aa_line(screen, p0, p1, max(3, L.S(9)), col, int(255 * 0.20))
+                aa_line(screen, p0, p1, max(2, L.S(3)), col, int(255 * 0.55))
             prev = ev
 
     def _draw_slot_line(self, screen, t, bar_p, rush):
@@ -696,10 +826,13 @@ class HighwayRenderer:
         base = 215 + int(40 * flash)
         col = KB.GOLD if rush else (base, base, base)
         y = L.Y(L.slot_y)
-        pygame.draw.line(screen, col, (0, y), (L.win_w, y), max(2, L.S(4)))
-        # measure sweep across the highway
+        lw = max(3, L.S(SLOT_LINE_W))
+        pygame.draw.rect(screen, col, (0, y - lw // 2, L.win_w, lw))
+        # measure sweep across the highway, a rounded bright bar riding the line
         sx = L.X(HIGHWAY_X0 + bar_p * LANE_W * 4)
-        pygame.draw.line(screen, WHITE, (sx, y), (min(L.win_w, sx + L.S(80)), y), max(2, L.S(6)))
+        sw, sh = L.S(80), lw + max(2, L.S(3))
+        sweep = aa_rounded_rect(sw, sh, sh / 2.0, WHITE)
+        screen.blit(sweep, (sx, y - sh // 2))
 
     def _update_rings(self, t, dt):
         # the slot rings never move: one ring per lane, on the lane centre
@@ -740,6 +873,11 @@ class HighwayRenderer:
         active_hold = self.rhythm._active_hold
         N = self.notes
         use_art = NOTE_ART == "sprite" and N.ok
+        # the beat bounce: every orb swells into the beat and settles after it, a little wider
+        # than tall at the top and a little thinner at the bottom of the dip
+        beat_i = self.beat_phase(t)[0]
+        amp = BOUNCE_AMP[beat_i % 4] if beat_i >= 0 else 0.7
+        sx, sy = bounce_scale(beat_bounce(beat_p), amp)
         for ev in self._visible_events(t):
             lane, x, w = self.geom[id(ev)]
             y = self._note_y(ev, t)
@@ -762,6 +900,20 @@ class HighwayRenderer:
                 continue
             col = KB.GOLD if rush else None
             cx, cy = L.X(x), L.Y(min(y, slot_y) if is_active_hold else y)
+            if ev.section_kind == "grace":
+                # the small note tied to the main one, like a piano grace note: half size, tucked
+                # to the side and just under the main orb (it lands first), a short tie between
+                fade = max(0.0, min(1.0, (y - L.spawn_y) / (L.fall_px * 0.15)))
+                gx = cx - L.S(int(L.orb_r * 1.15))
+                body = self._grace_body(lane, col)
+                pygame.draw.line(screen, (*KB.lane_color(lane), 255), (gx + L.S(10), cy - L.S(6)), (cx - L.S(10), cy - L.S(int(L.orb_r * 0.5))), max(2, L.S(3)))
+                b = body if fade >= 0.99 else multiply_alpha(body, fade)
+                screen.blit(b, b.get_rect(center=(gx, cy)))
+                g = self.notes.scaled(self.orbs.glyph(ev.char, KB.INK, 1.0), 0.6)
+                if fade < 0.99:
+                    g = multiply_alpha(g, fade)
+                screen.blit(g, g.get_rect(center=(gx, cy + L.S(1))))
+                continue
             # hold tail: a soft rounded bar up to where the hold ends
             if ev.hold_duration > 0:
                 end_y = slot_y - (ev.timestamp + ev.hold_duration - t) * self.speed
@@ -771,10 +923,7 @@ class HighwayRenderer:
                     anchor = ev.section_kind == "anchor"
                     tw = L.S(22 if anchor else 16)
                     tcol = KB.lane_color(lane) if anchor else KB.GOLD
-                    tail = pygame.Surface((tw, bottom - top), pygame.SRCALPHA)
-                    pygame.draw.rect(tail, (*tcol, int(255 * (0.45 if is_active_hold else 0.28))),
-                                     tail.get_rect(), border_radius=tw // 2)
-                    screen.blit(tail, (cx - tw // 2, top))
+                    aa_capsule_v(screen, cx, top, bottom, tw, tcol, int(255 * (0.45 if is_active_hold else 0.28)))
                     if anchor and not ev.hit:
                         lbl = render_text("stamp", L.S(14), "HOLD", tcol)
                         screen.blit(lbl, lbl.get_rect(center=(cx, cy - L.S(L.orb_r + 16))))
@@ -797,15 +946,18 @@ class HighwayRenderer:
                     body = N.note[lane]              # the author's colored note: disk, ring, glow
                 else:
                     body = N.plain                   # off-beats: the plain circle, no ring
+                if abs(sx - 1.0) > 0.003 or abs(sy - 1.0) > 0.003:
+                    bw, bh = body.get_size()
+                    body = pygame.transform.smoothscale(body, (int(bw * sx), int(bh * sy)))
             else:
                 halo = self.orbs.halo(lane, w, col)
                 if halo is not None:
                     h = halo if fade >= 0.99 else multiply_alpha(halo, fade)
                     screen.blit(h, h.get_rect(center=(cx, cy)))
-                body = self.orbs.body(lane, w, KB.GOLD if ev.hold_duration > 0 else col)
+                body = self.orbs.body_scaled(lane, w, KB.GOLD if ev.hold_duration > 0 else col, sx, sy)
             b = body if fade >= 0.99 else multiply_alpha(body, fade)
             screen.blit(b, b.get_rect(center=(cx, cy)))
-            g = self.orbs.glyph(ev.char, KB.INK, 1.0 if w >= 2 else 0.9)
+            g = self.orbs.glyph_scaled(ev.char, KB.INK, 1.0 if w >= 2 else 0.9, sx, sy)
             if fade < 0.99:
                 g = multiply_alpha(g, fade)
             screen.blit(g, g.get_rect(center=(cx, cy + L.S(1))))
@@ -851,11 +1003,12 @@ class HighwayRenderer:
                 continue
             k = b.age / 0.32
             r1 = int(L.S(40 + 26 * k))
-            ring = self.orbs.burst_ring(b.lane, r1, L.S(4), 0.55 * (1 - k), b.color)
+            q = round((1 - k) * 12) / 12                   # alpha in twelve steps so the ring cache hits
+            ring = self.orbs.burst_ring(b.lane, r1, L.S(4), 0.55 * q, b.color)
             screen.blit(ring, ring.get_rect(center=(L.X(b.x), L.Y(b.y))))
             if b.kind == 'perfect':
                 r2 = int(L.S(40 + 52 * k))
-                ring2 = self.orbs.burst_ring(b.lane, r2, L.S(2), 0.22 * (1 - k), b.color)
+                ring2 = self.orbs.burst_ring(b.lane, r2, L.S(2), 0.22 * q, b.color)
                 screen.blit(ring2, ring2.get_rect(center=(L.X(b.x), L.Y(b.y))))
             keep.append(b)
         self.bursts = keep
@@ -868,12 +1021,12 @@ class HighwayRenderer:
             s['x'] += s['vx'] * dt
             s['y'] += s['vy'] * dt
             k = s['age'] / s['life']
-            img = pygame.transform.rotate(s['img'], -math.degrees(s['ang']))
+            img = self._rotated(s['img'], -math.degrees(s['ang']))
             img = multiply_alpha(img, 1 - k * k)
             screen.blit(img, img.get_rect(center=(L.X(s['x']), L.Y(s['y']))))
             keep.append(s)
         self.shards = keep
-        # sparks
+        # sparks: soft anti-aliased dots (a cached disk per quarter-pixel radius and colour)
         keep = []
         for p in self.sparks:
             p['age'] += dt
@@ -883,8 +1036,9 @@ class HighwayRenderer:
             p['y'] += p['vy'] * dt
             p['vy'] += 300 * dt
             k = 1 - p['age'] / p['life']
-            r = max(1, int(L.S(p['r'] * k)))
-            pygame.draw.circle(screen, p['col'], (L.X(p['x']), L.Y(p['y'])), r)
+            r = max(0.75, round(L.Sf(p['r'] * k) * 4) / 4)
+            dot = aa_circle(r, p['col'])
+            screen.blit(dot, dot.get_rect(center=(L.X(p['x']), L.Y(p['y']))))
             keep.append(p)
         self.sparks = keep
         # stamps
@@ -921,24 +1075,68 @@ class HighwayRenderer:
         self.stamps = keep
 
     # sections
+    def _fx_dist(self, cx: float, cy: float):
+        """Distance from (cx, cy) for every pixel of the low-res layer, cached per centre: the
+        drop rings all leave the slot line and the milestone ring the combo number, so the two
+        grids are built once and every ring is then a couple of array ops."""
+        key = (int(cx), int(cy))
+        d = self._fx_dists.get(key)
+        if d is None:
+            import numpy as np
+            w, h = self._fx_layer.get_size()
+            xs = np.arange(w, dtype=np.float32) - cx
+            ys = np.arange(h, dtype=np.float32) - cy
+            d = np.sqrt(xs[:, None] ** 2 + ys[None, :] ** 2)
+            if len(self._fx_dists) > 6:
+                self._fx_dists.clear()
+            self._fx_dists[key] = d
+        return d
+
     def _draw_shockwaves(self, screen, t, dt):
+        """Rings as a distance field on the shared low-res layer, scaled up once, then the flash."""
         L = self.L
-        keep = []
-        for w in self.shockwaves:
-            k = (t - w['t0']) / w['dur']
-            if k >= 1.0:
-                continue
-            e = 1 - (1 - k) ** 2
-            r = max(2, L.S(60 + (w['r1'] - 60) * e))
-            width = max(2, L.S(14 * (1 - k)))
-            ring = self.orbs.burst_ring(0, r, width, 0.55 * (1 - k) ** 1.2, w['col'])
-            screen.blit(ring, ring.get_rect(center=(L.X(w['x']), L.Y(w['y']))))
-            keep.append(w)
+        keep = [w for w in self.shockwaves if t - w['t0'] < w['dur']]
         self.shockwaves = keep
+        live = [w for w in keep if t >= w['t0']]
+        if live:
+            from pygame import gfxdraw
+            layer = self._ring_layer
+            c0 = live[0]['col']
+            # full-res rings: a wide faint glow band, a core band, and anti-aliased edge circles
+            # on the core.  Only the rings' bounding box is cleared and blitted — a full-screen
+            # alpha blit is 1.5 ms, a young ring's box a fraction of that.  (The old distance
+            # field on a quarter-res layer cost 7 ms a frame in numpy plus a 2.5 ms upscale.)
+            box = None
+            rings = []
+            for w in live:
+                k = (t - w['t0']) / w['dur']
+                e = 1.0 - (1.0 - k) ** 2.2
+                r = (w['r0'] + (w['r1'] - w['r0']) * e) * L.s
+                width = max(1.5, w['w0'] * (1.0 - k) ** 0.8 * L.s)
+                a = w['a0'] * (1.0 - k) ** 1.3
+                c = (int(L.X(w['x'])), int(L.Y(w['y'])))
+                reach = int(r + width * 3 + 3)
+                rect = pygame.Rect(c[0] - reach, c[1] - reach, 2 * reach, 2 * reach)
+                box = rect if box is None else box.union(rect)
+                rings.append((c, r, width, a, w['col']))
+            box = box.clip(screen.get_rect())
+            if box.w > 1 and box.h > 1:
+                layer.fill((c0[0], c0[1], c0[2], 0), box)
+                for c, r, width, a, col in rings:
+                    glow_w = max(2, int(round(width * 3)))
+                    pygame.draw.circle(layer, (*col, int(255 * a * 0.22)), c, int(r + width), glow_w)
+                    core_w = max(1, int(round(width)))
+                    pygame.draw.circle(layer, (*col, int(255 * a)), c, int(r), core_w)
+                    for rr in (int(r), int(r) - core_w):
+                        if rr > 1:
+                            gfxdraw.aacircle(layer, c[0], c[1], rr, (*col, int(255 * a)))
+                screen.blit(layer.subsurface(box), box.topleft)
         flash = 1.0 - (t - self.drop_t) / 0.35
         if 0 < flash <= 1.0:
-            self._dim.fill((255, 255, 255, int(90 * flash * flash)))
-            screen.blit(self._dim, (0, 0))
+            # one opaque white surface with a surface alpha: the fast blit path (0.8 ms), where
+            # an additive fill was 8.7 ms and an alpha veil 1.3 ms
+            self._flash.set_alpha(int(90 * self.drop_size * flash * flash))
+            screen.blit(self._flash, (0, 0))
 
     def _draw_dust(self, screen, t, dt):
         """Slow motes drifting up the highway in the quiet stretches; gone when the song drives."""
@@ -959,8 +1157,8 @@ class HighwayRenderer:
             k = d['age'] / d['life']
             a = math.sin(math.pi * k) * (0.55 * calm + 0.05)
             if a > 0.02:
-                pygame.draw.circle(screen, tuple(int(c * a + 12 * (1 - a)) for c in (222, 220, 255)),
-                                   (L.X(d['x']), L.Y(d['y'])), max(1, L.S(d['r'])))
+                dot = aa_circle(max(0.75, round(L.Sf(d['r']) * 2) / 2), (222, 220, 255), 0, int(255 * a))
+                screen.blit(dot, dot.get_rect(center=(L.X(d['x']), L.Y(d['y']))))
             keep.append(d)
         self.dust = keep
 
@@ -975,28 +1173,30 @@ class HighwayRenderer:
         L = self.L
         pop = 1.0 + 0.35 * max(0.0, 1.0 - age / 0.18) ** 2
         a = 1.0 if age < 0.7 else max(0.0, 1.0 - (age - 0.7) / 0.4)
-        s = render_text("display", int(L.S(120) * pop), str(n), KB.GOLD)
+        s = render_text("display", L.S(120), str(n), KB.GOLD)
+        if pop > 1.005:
+            s = pygame.transform.smoothscale(s, (max(1, int(s.get_width() * pop)), max(1, int(s.get_height() * pop))))
         s = multiply_alpha(s, 0.9 * a)
         cx, cy = L.X(L.COMBO_POS[0]), L.Y(L.COMBO_POS[1]) - L.S(30 * min(1.0, age / 1.1))
         screen.blit(s, s.get_rect(center=(cx, cy)))
         lbl = render_text("stamp", L.S(26), "COMBO", KB.GOLD)
         lbl = multiply_alpha(lbl, 0.8 * a)
         screen.blit(lbl, lbl.get_rect(center=(cx, cy + s.get_height() // 2 + L.S(10))))
-        if age < 0.5:
-            ring = self.orbs.burst_ring(0, max(2, L.S(80 + 260 * age)), max(2, L.S(4)), 0.5 * (1 - age / 0.5), KB.GOLD)
-            screen.blit(ring, ring.get_rect(center=(cx, cy)))
 
     def _draw_section_tag(self, screen, t):
         """A small label at the top while a phrase is a build or a hold, fading at its edges."""
         ph = self.phrase_at(t)
         if ph is None or ph[3] not in SECTION_TAG:
+            lp = self.layer_at(t)
+            if lp is not None and lp[4] == "alt" and lp[2] in LAYER_TAG:
+                self._draw_layer_tag(lp[0], lp[1], LAYER_TAG[lp[2]], screen, t)
             return
         _i, t0, t1, kind = ph
         L = self.L
         if kind == "anchor":
             # only while there is something to hold: an anchor on screen, held, or just finished
             pending = any(e.section_kind == "anchor" and not e.hit for e in self._visible_events(t))
-            if self.anchor_ev is None and not pending and t > self.anchor_end_t + 0.6:
+            if not self.anchors and not pending and t > self.anchor_end_t + 0.6:
                 return
         k = min(1.0, (t - t0) / 0.4) * min(1.0, (t1 - t) / 0.4)
         if k <= 0:
@@ -1015,54 +1215,123 @@ class HighwayRenderer:
             prog = (t - t0) / max(1e-3, t1 - t0)
             pygame.draw.line(screen, tuple(int(c * k) for c in col), (cx - w // 2, y), (cx - w // 2 + int(w * prog), y), max(2, L.S(3)))
 
-    def _draw_anchor_lane(self, screen, t):
-        """While an anchor is held: its lane glows, a bar sinks from the top as the hold runs down,
-        and the held key sits big on the slot ring.  Red for a moment when it breaks."""
+    def _warm_caches(self) -> None:
+        """Bake the press bursts every lane will need before the song starts: the first hits of a
+        song were building them mid-frame (a quarter millisecond each, a dozen a frame)."""
         L = self.L
-        ev = self.anchor_ev
-        broke = t - self.anchor_break_t
-        if ev is None and not (0 <= broke < 0.4):
-            gold = t - self.anchor_end_t
-            if not (0 <= gold < 0.5):
-                return
-        if ev is not None:
-            lane = ev.lane if ev.lane >= 0 else KB.lane_of(ev.char)
-            col = KB.lane_color(lane)
-            end = ev.timestamp + ev.hold_duration
-            prog = max(0.0, min(1.0, (t - ev.timestamp) / max(1e-3, ev.hold_duration)))
-            a = 1.0
-        else:
-            lane = -1
-            col = KB.MISS_RED if 0 <= broke < 0.4 else KB.GOLD
-            a = (1.0 - broke / 0.4) if 0 <= broke < 0.4 else (1.0 - (t - self.anchor_end_t) / 0.5)
-            prog = 1.0
-        if lane < 0:
-            # remember the last lane through the fade
-            lane = getattr(self, "_anchor_last_lane", 0)
-        self._anchor_last_lane = lane
-        x0, x1 = L.X(L.lane_x0(lane)), L.X(L.lane_x0(lane) + LANE_W)
+        # the stars are 4 ms each to build: queue them and build one a frame during the lead-in
+        # (see _warm_step), in the order the first hits will need them
+        pending: list[tuple[int, int, tuple]] = []
+        seen = set()
+        for i in range(24):
+            k = i / 23
+            reach = 1.0 - (1.0 - k) ** 3
+            for lane in range(4):
+                for big in (True, False):
+                    r = L.S((52 if big else 42) + (84 if big else 56) * reach)
+                    rq = max(6, int(r) // STAR_R_STEP * STAR_R_STEP)
+                    key = (lane, rq, KB.lane_color(lane))
+                    if key not in seen:
+                        seen.add(key)
+                        pending.append(key)
+        self._warm_pending = pending
+        self._flash = pygame.Surface((L.win_w, L.win_h)).convert()
+        self._flash.fill((255, 255, 255))
+        # the stamp faces load their font files on first use: do it now, not on the first hit
+        for kind, text in STAMP_TEXT.items():
+            render_text("stamp", L.S(36), text, STAMP_COLORS.get(kind, WHITE))
+        render_text("stamp", L.S(26), "SLIP · A", STAMP_COLORS.get("slip", WHITE))
+        for tag in ("EARLY", "LATE"):
+            render_text("body_bold", L.S(16), tag, (200, 200, 220))
+        render_text("stamp", L.S(24), "BUILD", KB.GOLD)
+        # and one drop ring, so the first drop's frame pays no first-time cost either
+        scratch = pygame.Surface((L.win_w, L.win_h))
+        prev = self.shockwaves
+        self.shockwaves = [{'t0': -1.0, 'x': HIGHWAY_CX, 'y': L.slot_y, 'col': WHITE, 'dur': 0.5, 'r0': 60, 'r1': 900, 'w0': 12, 'a0': 0.5}]
+        self._draw_shockwaves(scratch, -0.8, 1 / 60)
+        self.shockwaves = prev
+
+    def _warm_step(self, t: float) -> None:
+        """Build one queued press burst per frame while nothing needs the time — before the
+        first note, and then only in frames with no bursts on screen."""
+        if not self._warm_pending:
+            return
+        if self.hit_anims and t >= self._first_note_t - 0.3:
+            return
+        lane, r, col = self._warm_pending.pop(0)
+        self.orbs.hit_star(lane, r, 1.0, col)
+
+    def _rotated(self, img, deg):
+        """A shard rotated in 5° steps, cached per shard image: rotozoom every frame was the
+        cost of every perfect hit."""
+        step = int(round(deg / 5.0)) * 5
+        key = (id(img), step)
+        cache = self.__dict__.setdefault("_rot_cache", {})
+        s = cache.get(key)
+        if s is None or s[0] is not img:
+            if len(cache) > 600:
+                cache.clear()
+            s = (img, pygame.transform.rotozoom(img, step, 1.0))
+            cache[key] = s
+        return s[1]
+
+    def _grace_body(self, lane, col):
+        key = (lane, col)
+        s = self._grace_cache.get(key) if hasattr(self, "_grace_cache") else None
+        if s is None:
+            if not hasattr(self, "_grace_cache"):
+                self._grace_cache = {}
+            s = self.notes.scaled(self.orbs.body(lane, 1, col), 0.55)
+            self._grace_cache[key] = s
+        return s
+
+    def _draw_layer_tag(self, t0, t1, text, screen, t):
+        """The riff tag: the chart follows the bass / the drums / the hats for this phrase."""
+        L = self.L
+        k = min(1.0, (t - t0) / 0.4) * min(1.0, (t1 - t) / 0.4)
+        if k <= 0:
+            return
+        col = KB.lane_color(0)
+        s = render_text("stamp", L.S(24), text, col)
+        s = multiply_alpha(s, 0.85 * k)
+        cx, cy = L.X(HIGHWAY_CX), L.Y(L.top + 40)
+        screen.blit(s, s.get_rect(center=(cx, cy)))
+        w = L.S(160)
+        y = cy + L.S(18)
+        pygame.draw.line(screen, tuple(int(c * 0.55 * k) for c in col), (cx - w // 2, y), (cx + w // 2, y), max(1, L.S(2)))
+
+    def _draw_anchor_lane(self, screen, t):
+        """Every held lane glows, a bar sinks from the top as its hold runs down and the held key
+        sits big on the slot ring; a lane flashes gold for a moment when its hold completes and
+        red when it breaks.  A chord is simply two lanes at once."""
+        L = self.L
         top, bottom = L.Y(L.top), L.Y(L.slot_y)
-        fill = self.duet_fills[lane] if 0 <= lane < 4 else None
-        if fill is not None:
-            f = multiply_alpha(fill, 0.9 * a)
-            if col is not KB.lane_color(lane):
-                f.fill((*col, 255), special_flags=pygame.BLEND_RGBA_MULT)
-            screen.blit(f, (x0, top))
-        # the remaining hold as a bar in the lane, shrinking towards the slot
-        if ev is not None:
+        # fades first, under the live holds
+        for lane, (t0, kind) in list(self.anchor_fades.items()):
+            age = t - t0
+            dur = 0.4 if kind == "broke" else 0.5
+            if age >= dur:
+                self.anchor_fades.pop(lane, None)
+                continue
+            col = KB.MISS_RED if kind == "broke" else KB.GOLD
+            f = multiply_alpha(self.duet_fills[lane], 0.9 * (1.0 - age / dur))
+            f.fill((*col, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            screen.blit(f, (L.X(L.lane_x0(lane)), top))
+        for lane, ev in self.anchors.items():
+            col = KB.lane_color(lane)
+            prog = max(0.0, min(1.0, (t - ev.timestamp) / max(1e-3, ev.hold_duration)))
+            screen.blit(multiply_alpha(self.duet_fills[lane], 0.9), (L.X(L.lane_x0(lane)), top))
             h = int((bottom - top) * (1.0 - prog))
             bw = L.S(22)
             cx = L.X(L.lane_center(lane))
-            bar = pygame.Surface((bw, max(2, h)), pygame.SRCALPHA)
-            pygame.draw.rect(bar, (*col, int(255 * 0.55)), bar.get_rect(), border_radius=bw // 2)
-            screen.blit(bar, (cx - bw // 2, bottom - h))
+            aa_capsule_v(screen, cx, bottom - h, bottom, bw, col, int(255 * 0.55))
             pulse = 0.5 + 0.5 * (1.0 - self.beat_phase(t)[1])
-            ring = self.orbs.burst_ring(lane, L.S(self.L.slot_ring_r + 10 + 6 * pulse), max(2, L.S(3)), 0.5 + 0.4 * pulse, col)
+            ring = self.orbs.burst_ring(lane, L.S(L.slot_ring_r + 10 + 6 * pulse), max(2, L.S(3)), 0.5 + 0.4 * pulse, col)
             screen.blit(ring, ring.get_rect(center=(cx, bottom)))
             key = render_text("display", L.S(54), ev.char.upper(), WHITE)
             screen.blit(key, key.get_rect(center=(cx, bottom)))
             lbl = render_text("stamp", L.S(16), "HOLD", col)
-            screen.blit(lbl, lbl.get_rect(center=(cx, bottom + L.S(self.L.slot_ring_r + 26))))
+            screen.blit(lbl, lbl.get_rect(center=(cx, bottom + L.S(L.slot_ring_r + 26))))
 
     # word block
     def _word_slot_x(self, n_letters: int, idx: int) -> float:
@@ -1098,8 +1367,7 @@ class HighwayRenderer:
                 e = by_idx.get(i)
                 typed = e is not None and e.hit and (evs[0].word_id, i) not in flying_slots
                 if e is None:
-                    surf = render_text("display", px, ch, (255, 255, 255))
-                    surf = multiply_alpha(surf, 0.22)
+                    surf = faded_text("display", px, ch, (255, 255, 255), 0.22)
                 elif typed:
                     surf = render_text("display", px, ch, KB.GOLD if rush else KB.lane_color(e.lane))
                 elif i == cur_idx:
@@ -1112,12 +1380,8 @@ class HighwayRenderer:
                     uy = y + px // 2 + L.S(6)
                     pygame.draw.rect(screen, tuple(int(c * pulse) for c in KB.lane_color(e.lane)),
                                      (x - uw // 2, uy, uw, max(2, L.S(4))))
-                elif (evs[0].word_id, i) in flying_slots:
-                    surf = render_text("display", px, ch, (255, 255, 255))
-                    surf = multiply_alpha(surf, 0.4)
                 else:
-                    surf = render_text("display", px, ch, (255, 255, 255))
-                    surf = multiply_alpha(surf, 0.40)
+                    surf = faded_text("display", px, ch, (255, 255, 255), 0.40)
                 screen.blit(surf, surf.get_rect(center=(x, y)))
         # the word just finished lifts off and fades — gold when it was clean
         age = t - self.word_flash_t
@@ -1128,7 +1392,10 @@ class HighwayRenderer:
             n = len(word)
             for i, ch in enumerate(word):
                 col = KB.GOLD if (clean or rush) else KB.lane_color(KB.lane_of(ch))
-                surf = render_text("display", int(px * (1.0 + 0.18 * e)), ch, col)
+                surf = render_text("display", px, ch, col)
+                grow = 1.0 + 0.18 * e
+                if grow > 1.005:
+                    surf = pygame.transform.smoothscale(surf, (max(1, int(surf.get_width() * grow)), max(1, int(surf.get_height() * grow))))
                 surf = multiply_alpha(surf, (1 - k) ** 1.2 * 0.9)
                 screen.blit(surf, surf.get_rect(center=(L.X(self._word_slot_x(n, i)), y - L.S(46 * e))))
         # queue, stacked
@@ -1155,17 +1422,16 @@ class HighwayRenderer:
             else:
                 x = f['x0'] + (f['x1'] - f['x0']) * e
                 yy = f['y0'] + (f['y1'] - f['y0']) * e - 80 * math.sin(math.pi * e)
-                pygame.draw.circle(screen, KB.lane_color(0), (L.X(x), L.Y(yy)), L.S(7))
+                dot = aa_circle(L.S(7), KB.lane_color(0))
+                screen.blit(dot, dot.get_rect(center=(L.X(x), L.Y(yy))))
             keep.append(f)
         self.flying = keep
 
     def _blit_spaced(self, screen, kind, px, text, cx, cy, color, spacing, alpha=1.0):
-        surfs = [render_text(kind, px, ch, color) for ch in text]
+        surfs = [faded_text(kind, px, ch, color, alpha) for ch in text]
         total = sum(s.get_width() for s in surfs) + spacing * (len(surfs) - 1)
         x = cx - total // 2
         for s in surfs:
-            if alpha < 1.0:
-                s = multiply_alpha(s, alpha)
             screen.blit(s, (x, cy - s.get_height() // 2))
             x += s.get_width() + spacing
 
@@ -1184,30 +1450,28 @@ class HighwayRenderer:
         # rush bar
         bx, by, bw, bh = L.RUSH_BAR
         rect = pygame.Rect(L.X(bx), L.Y(by), L.S(bw), L.S(bh))
-        pygame.draw.rect(screen, (26, 26, 38), rect, border_radius=L.S(6))
+        screen.blit(self.rush_track, rect.topleft)
         fill = self.rush_charge
         if rush:
             fill = max(0.0, (self.rush_until - t) / (C.RUSH_BARS * self.bar_dur))
         if fill > 0:
-            fr = pygame.Rect(rect.x, rect.y, max(L.S(6), int(rect.w * fill)), rect.h)
-            bar = pygame.Surface(fr.size, pygame.SRCALPHA)
-            bar.fill((184, 162, 74, 255))
-            step = max(4, L.S(18))
-            for sx in range(-fr.h, fr.w + fr.h, step):      # diagonal gold stripes, as in the figure
-                pygame.draw.polygon(bar, (*KB.GOLD, 255), [(sx, fr.h), (sx + fr.h, 0), (sx + fr.h + step // 2, 0), (sx + step // 2, fr.h)])
-            mask = pygame.Surface(fr.size, pygame.SRCALPHA)
-            pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=L.S(6))
-            bar.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
-            screen.blit(bar, fr.topleft)
-        pygame.draw.rect(screen, (90, 90, 110), rect, 1, border_radius=L.S(6))
+            fw = max(L.S(6), min(rect.w, int(rect.w * fill)))
+            bar = self._rush_fills.get(fw)
+            if bar is None:
+                bar = self.rush_fill_full.subsurface((0, 0, fw, rect.h)).copy()
+                bar.blit(aa_rounded_rect(fw, rect.h, L.S(6), WHITE), (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+                self._rush_fills[fw] = bar
+            screen.blit(bar, rect.topleft)
+        screen.blit(self.rush_border, rect.topleft)
         # lives
         lx, ly = L.LIVES_POS
         for i in range(C.LIVES):
             col = KB.lane_color(0) if i < self.lives else (48, 42, 58)
-            r = L.S(6)
+            r = L.Sf(6)
             if i == self.lives - 1 and self.lives == 1:
-                r = L.S(6 + 2 * abs(math.sin(t * 4)))
-            pygame.draw.circle(screen, col, (L.X(lx + i * 20), L.Y(ly)), r)
+                r = L.Sf(6 + 2 * abs(math.sin(t * 4)))
+            dot = aa_circle(round(r * 4) / 4, col)
+            screen.blit(dot, dot.get_rect(center=(L.X(lx + i * 20), L.Y(ly))))
         # accuracy
         a = render_text("display", L.S(40), f"{stats.get_accuracy():.1f} %", WHITE, cache=False)
         screen.blit(a, (L.X(L.ACC_POS[0]) - a.get_width(), L.Y(L.ACC_POS[1]) - a.get_height() // 2))

@@ -119,6 +119,32 @@ class MusicManager:
         until done, then titleloop2 starts as normal."""
         self._video_done = True
 
+    def skip_intro_to(self, seconds: float) -> None:
+        """Jump title2.wav forward to `seconds` (the point where the video
+        would have ended) so the music stays aligned when the intro is skipped.
+        pygame Sounds can't seek, so play a sliced copy of the raw buffer."""
+        self._video_done = True
+        if self._state != self._INTRO:
+            return
+        elapsed = time.time() - (self._intro_start_t or time.time())
+        if seconds <= elapsed:
+            return   # already past that point — nothing to align
+        init = pygame.mixer.get_init()
+        if not init:
+            return
+        freq, fmt, channels = init
+        frame_bytes = (abs(fmt) // 8) * channels
+        raw    = self._snd_title_intro.get_raw()
+        offset = int(seconds * freq) * frame_bytes
+        if offset >= len(raw):
+            self._ch0.stop()
+            self._transition_to_title()
+            return
+        self._ch0.stop()
+        self._ch0.set_volume(self._MASTER)
+        self._ch0.play(pygame.mixer.Sound(buffer=raw[offset:]))
+        self._intro_start_t = time.time() - seconds
+
     def on_play_pressed(self) -> None:
         """Call when the title-screen play button is clicked."""
         if self._state in (self._INTRO, self._TITLE):

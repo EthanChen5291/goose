@@ -19,6 +19,11 @@ import numpy as np
 MUST, SHOULD, MAY, NO = 3, 2, 1, 0
 CLASS_NAMES = {3: "MUST", 2: "SHOULD", 1: "MAY", 0: "NO"}
 
+# The layers a chart can follow.  "lead" is the harmonic band above ~280 Hz (a voice, a guitar,
+# a synth line), "bass" the harmonic band under it, the rest are the drum kit.  Keyboard
+# Warrior's charts, read from the reels, follow whichever of these carries the phrase.
+LAYERS = ("lead", "bass", "kick", "snare", "hat")
+
 # metric weight by (beat in bar, sixteenth in beat)
 _BEAT_W = {0: 1.0, 1: 0.75, 2: 0.9, 3: 0.75}
 _SUB_W = {0: 1.0, 1: 0.3, 2: 0.5, 3: 0.3}
@@ -43,6 +48,17 @@ class Point:
     t_hit: float = -1.0 # when the hit actually lands (the full-mix onset within ±35 ms), −1 = on the grid
     t_vocal: float = -1.0   # the vocal / lead onset nearest this point (±45 ms), −1 = none
     melodic: bool = False   # the bar is carried by a tune: slots follow the vocal band, not the drums
+    bass: float = 0.0       # harmonic onset below ~280 Hz: a bass line, a pad's root
+    peaks: int = -1         # bitmask over LAYERS of "a local maximum in that band"; −1 = use ``peak``
+
+    def layer(self, name: str) -> float:
+        """This point's onset strength in one layer (see LAYERS)."""
+        return {"lead": self.vocal, "bass": self.bass, "kick": self.kick, "snare": self.snare, "hat": self.hat}[name]
+
+    def layer_peak(self, name: str) -> bool:
+        if self.peaks < 0:
+            return self.peak
+        return bool(self.peaks & (1 << LAYERS.index(name)))
 
     @property
     def conf(self) -> float:
@@ -73,7 +89,10 @@ class Skeleton:
     bar_energy: list[float]            # 0..1 per bar
     bar_vocal: list[float]             # 0..1 per bar
     bar_start: list[float]             # seconds per bar
-    sustains: list[tuple[float, float]] = field(default_factory=list)   # (onset, duration)
+    sustains: list[tuple[float, float]] = field(default_factory=list)   # (onset, duration) in the full mix
+    # (onset, duration, band) — "low" is a bass / pad drone, "high" a lead or vocal held note.
+    # These are what the Duo sections hold on: the band says which hand.
+    band_sustains: list[tuple[float, float, str]] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
 
     @property
@@ -89,14 +108,82 @@ class Skeleton:
 # carries most of the score, and the metric position (beat 1, beat 3, the backbeats)
 # breaks ties, so a syncopated hit that stands out wins over a quiet beat.
 METRIC_PRIO = {4: 0.9, 3: 0.7, 2: 0.5, 1: 0.2, 0: 0.0}
+# In a melodic stretch the tune leads and the grid only breaks ties: Keyboard Warrior's charts
+# (measured from the reels) put ~half their notes on lead/vocal onsets and only a fifth on a
+# beat, where a grid-first pick lands 94 % on beats and misses the melody.
+MELODIC_METRIC_SCALE = 0.35
 
 
 def slot_score(p: Point, rel: float) -> float:
+    if p.melodic:
+        return 1.6 * rel + MELODIC_METRIC_SCALE * METRIC_PRIO[p.metric] + (0.3 if p.peak else 0.0) \
+            + (0.35 if p.attack == "vocal" else 0.0)
     return 1.6 * rel + METRIC_PRIO[p.metric] + (0.2 if p.peak else 0.0)
+
+
+def layer_score(p: Point, layer: str, rel: float) -> float:
+    """Priority of a point as a note of one layer: loudness in that layer first, the grid as a
+    tie-break (a tune may land anywhere; a drum part leans on the beat)."""
+    grid = MELODIC_METRIC_SCALE if layer == "lead" else 0.7
+    return 1.6 * rel + grid * METRIC_PRIO[p.metric] + (0.2 if p.layer_peak(layer) else 0.0)
+
+
+def layer_eligible(p: Point, layer: str, finest: int, rel: float) -> bool:
+    """Can a letter follow this layer here?  A real onset of the layer (a local maximum, loud
+    enough in absolute terms and against the loudest of its stretch), on the tier's grid —
+    except a lead note, which may fall between the grid lines when it clearly sounds."""
+    if not p.layer_peak(layer):
+        return False
+    v = p.layer(layer)
+    if v < 0.28 or rel < 0.35:
+        return False
+    if p.sub % finest != 0:
+        return layer == "lead" and rel >= 0.5 and v >= 0.35
+    if p.sub == 0:
+        return True
+    return rel >= (0.40 if p.sub == 2 else 0.50)
+
+
+def select_layer_slots(pts: list[Point], layer: str, k: int, min_gap: float, finest: int,
+                       taken: list[Point] | None = None) -> tuple[list[Point], list[Point]]:
+    """The ``k`` strongest onsets of one layer in a stretch, never closer than ``min_gap`` to
+    each other or to ``taken`` (slots already placed by another layer).  Returns (slots in time
+    order, every eligible point)."""
+    if not pts or k <= 0:
+        return [], []
+    vals = [p.layer(layer) for p in pts]
+    top = max(vals)
+    if top < 0.28:
+        return [], []
+    # loudness relative to the stretch's loudest onset — but one very loud hit (the envelopes are
+    # normalised to their 95th percentile, so 1.0 is already a loud onset) must not silence the
+    # ordinary notes around it
+    top = min(top, 1.0)
+    cand = [p for p, v in zip(pts, vals) if layer_eligible(p, layer, finest, v / top)]
+    if not cand:
+        return [], []
+    order = sorted(cand, key=lambda p: (-layer_score(p, layer, p.layer(layer) / top), p.t))
+    kept: list[Point] = []
+    busy = list(taken or [])
+    if layer != "lead":
+        first = next((p for p in order if p.sub == 0), None)     # a drum part starts on a beat
+        if first is not None and all(abs(first.t - q.t) >= min_gap for q in busy):
+            kept.append(first)
+    for p in order:
+        if len(kept) >= k:
+            break
+        if p in kept:
+            continue
+        if all(abs(p.t - q.t) >= min_gap for q in kept) and all(abs(p.t - q.t) >= min_gap for q in busy):
+            kept.append(p)
+    kept.sort(key=lambda p: p.t)
+    return kept, cand
 
 
 def eligible(p: Point, finest: int, rel: float) -> bool:
     """Can a letter sit here?  ``rel`` is the point's confidence relative to the loudest in its stretch."""
+    if p.melodic and p.attack == "vocal" and p.peak and rel >= 0.45 and p.vocal >= 0.30:
+        return True                      # a sung / lead note: wherever it falls, even off the tier's grid
     if p.sub % finest != 0:
         return False
     if p.sub == 0:
@@ -127,7 +214,9 @@ def select_slots(pts: list[Point], k: int, min_gap: float, finest: int) -> tuple
         return [], []
     order = sorted(cand, key=lambda p: (-slot_score(p, p.conf / max_conf), p.t))
     kept: list[Point] = []
-    anchor = next((p for p in order if p.sub == 0), None)
+    melodic = sum(1 for p in pts if p.melodic) * 2 > len(pts)
+    # a word starts on a beat — unless the tune leads, when it starts where the tune does
+    anchor = order[0] if melodic else next((p for p in order if p.sub == 0), None)
     if anchor is not None:
         kept.append(anchor)
     for p in order:
@@ -163,7 +252,8 @@ def _band_onsets(y: np.ndarray, sr: int, hop: int) -> dict[str, np.ndarray]:
         "kick": band(mel_p, 20, 150),
         "snare": band(mel_p, 150, 2200),
         "hat": band(mel_p, 5000, sr / 2),
-        "vocal": band(mel_h, 280, 3400),
+        "vocal": band(mel_h, 280, 4500),
+        "bass": band(mel_h, 30, 280),
         "full": librosa.onset.onset_strength(S=librosa.power_to_db(mel_f + 1e-10), sr=sr, hop_length=hop),
     }
     # normalise each envelope to its 95th percentile
@@ -195,10 +285,11 @@ def _sample_env_peak_t(env: np.ndarray, frame_times: np.ndarray, t: float, win: 
     return float(seg[i]), float(frame_times[min(lo + i, len(frame_times) - 1)])
 
 
-def hit_time(p: Point) -> float:
-    """Where a letter for this point should land: on the sung note in a melodic bar, else on
-    the audible onset, else on the grid."""
-    if p.melodic and p.t_vocal >= 0 and p.vocal >= 0.30:
+def hit_time(p: Point, layer: str | None = None) -> float:
+    """Where a letter for this point should land: on the sung note when the note follows the
+    lead (or the bar is melodic and no layer is given), else on the audible onset, else on the grid."""
+    follows_lead = (layer == "lead") if layer is not None else p.melodic
+    if follows_lead and p.t_vocal >= 0 and p.vocal >= 0.30:
         return p.t_vocal
     return p.t_hit if p.t_hit >= 0 else p.t
 
@@ -228,8 +319,13 @@ def _beat_grid(y: np.ndarray, sr: int, expected_bpm: int | None) -> tuple[float,
     else:
         bpm = target
     # if the tracker still doubled or halved the prior, fold it back by resampling the grid
-    if len(bt) > 8 and bpm > target * 1.6:
+    # (a 136 prior tracked at 199 on one reel: anything past a third off the prior is an octave slip)
+    if len(bt) > 8 and bpm > target * 1.34:
         bt = bt[::2]
+        bpm = float(60.0 / np.median(np.diff(bt)))
+    elif len(bt) > 8 and bpm < target * 0.72:
+        mid = (bt[:-1] + bt[1:]) * 0.5
+        bt = np.sort(np.concatenate([bt, mid]))
         bpm = float(60.0 / np.median(np.diff(bt)))
     onset_times = librosa.frames_to_time(np.arange(len(onset_env)), sr=sr)
     off = find_downbeat_offset(bt, onset_env, onset_times)
@@ -273,6 +369,89 @@ def _sustains(y: np.ndarray, sr: int, beat_dur: float) -> list[tuple[float, floa
     return out
 
 
+def _band_split(y: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
+    """The mix as two signals: below ~220 Hz (bass, pads' roots) and above ~350 Hz (leads, vocals)."""
+    import librosa
+    D = librosa.stft(y, n_fft=2048, hop_length=512)
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    lo = D.copy()
+    lo[freqs > 220.0, :] = 0
+    hi = D.copy()
+    hi[freqs < 350.0, :] = 0
+    return librosa.istft(lo, hop_length=512, length=len(y)), librosa.istft(hi, hop_length=512, length=len(y))
+
+
+def _pitch_sustains(sig: np.ndarray, sr: int, beat_dur: float, min_beats: float = 1.5) -> list[tuple[float, float]]:
+    """Held *pitches*: runs where the dominant chroma stays put while the band is sounding.
+
+    A sung note or a pad chord varies in loudness (vibrato, a swell) and so slips past the
+    RMS test, but its pitch class does not move.  Runs shorter than ``min_beats`` are ignored;
+    a run may skip up to two frames of wobble.
+    """
+    import librosa
+    hop = 512
+    try:
+        C = librosa.feature.chroma_cqt(y=sig, sr=sr, hop_length=hop)
+    except Exception:
+        return []
+    if C.size == 0:
+        return []
+    rms = librosa.feature.rms(y=sig, frame_length=2048, hop_length=hop)[0]
+    n = min(C.shape[1], len(rms))
+    C, rms = C[:, :n], rms[:n]
+    loud = rms >= 0.15 * (float(np.percentile(rms, 95)) + 1e-9)
+    strength = C.max(axis=0) / (C.sum(axis=0) + 1e-9)          # how single-pitched the frame is
+    dom = C.argmax(axis=0)
+    ft = librosa.frames_to_time(np.arange(n), sr=sr, hop_length=hop)
+    out: list[tuple[float, float]] = []
+    i = 0
+    while i < n:
+        if not (loud[i] and strength[i] >= 0.22):
+            i += 1
+            continue
+        pc = dom[i]
+        j = i + 1
+        miss = 0
+        while j < n:
+            ok = loud[j] and dom[j] == pc and strength[j] >= 0.18
+            if ok:
+                miss = 0
+            else:
+                miss += 1
+                if miss > 2:
+                    break
+            j += 1
+        end = j - miss
+        dur = ft[min(end, n - 1)] - ft[i]
+        if dur >= min_beats * beat_dur:
+            out.append((float(ft[i]), float(round(dur / (beat_dur * 0.5)) * beat_dur * 0.5)))
+        i = max(end, i + 1)
+    return out
+
+
+def _band_sustains(y: np.ndarray, sr: int, beat_dur: float) -> list[tuple[float, float, str]]:
+    """Sustains per band — held pitches and flat-loudness holds — merged in time order."""
+    out: list[tuple[float, float, str]] = []
+    try:
+        y_lo, y_hi = _band_split(y, sr)
+    except Exception:
+        return out
+    for band, sig in (("low", y_lo), ("high", y_hi)):
+        if float(np.max(np.abs(sig))) < 1e-4:
+            continue
+        found = list(_pitch_sustains(sig, sr, beat_dur)) + list(_sustains(sig, sr, beat_dur))
+        found.sort()
+        merged: list[list[float]] = []
+        for onset, dur in found:
+            if merged and onset <= merged[-1][0] + merged[-1][1] + 0.5 * beat_dur:
+                merged[-1][1] = max(merged[-1][1], onset + dur - merged[-1][0])
+            else:
+                merged.append([onset, dur])
+        out.extend((float(o), float(d), band) for o, d in merged)
+    out.sort(key=lambda x: x[0])
+    return out
+
+
 # ── build ─────────────────────────────────────────────────────────────────
 def build_skeleton(song_path: str, expected_bpm: int | None = None, progress=None) -> Skeleton:
     import librosa
@@ -310,10 +489,13 @@ def build_skeleton(song_path: str, expected_bpm: int | None = None, progress=Non
             h = _sample_env(envs["hat"], frame_times, t)
             v = _sample_env(envs["vocal"], frame_times, t)
             f = _sample_env(envs["full"], frame_times, t)
+            bs = _sample_env(envs["bass"], frame_times, t)
             w = _BEAT_W[beat] * _SUB_W[sub]
-            rows.append((float(t), bar, beat, sub, k, s, h, v, f, w))
-    confs = [min(1.0, max(k, s, v, 0.8 * f, 0.6 * h)) for (_t, _b, _bt, _su, k, s, h, v, f, _w) in rows]
-    for i, (t, bar, beat, sub, k, s, h, v, f, w) in enumerate(rows):
+            rows.append((float(t), bar, beat, sub, k, s, h, v, f, w, bs))
+    confs = [min(1.0, max(k, s, v, 0.8 * f, 0.6 * h)) for (_t, _b, _bt, _su, k, s, h, v, f, _w, _bs) in rows]
+    layer_vals = {"lead": [r[7] for r in rows], "bass": [r[10] for r in rows], "kick": [r[4] for r in rows],
+                  "snare": [r[5] for r in rows], "hat": [r[6] for r in rows]}
+    for i, (t, bar, beat, sub, k, s, h, v, f, w, bs) in enumerate(rows):
         conf = confs[i]
         f_max, t_peak = _sample_env_peak_t(envs["full"], frame_times, t)
         t_hit = t_peak if (conf >= 0.25 and f_max >= 0.15) else -1.0
@@ -335,7 +517,15 @@ def build_skeleton(song_path: str, expected_bpm: int | None = None, progress=Non
             cls = NO
         bands = {"kick": k, "snare": s, "vocal": v, "hat": 0.6 * h, "full": 0.8 * f}
         attack = max(bands, key=bands.get)
-        points.append(Point(t, bar, beat, sub, k, s, h, v, f, w, accent, cls, attack, peak, t_hit, t_vocal))
+        mask = 0
+        for li, name in enumerate(LAYERS):
+            vals = layer_vals[name]
+            prev_v = vals[i - 1] if i > 0 else 0.0
+            next_v = vals[i + 1] if i + 1 < len(vals) else 0.0
+            if vals[i] >= max(prev_v, next_v) - 0.05:
+                mask |= 1 << li
+        points.append(Point(t, bar, beat, sub, k, s, h, v, f, w, accent, cls, attack, peak, t_hit, t_vocal,
+                            False, bs, mask))
     # bar energy / vocal presence
     n_bars = len(bar_start)
     for b in range(n_bars):
@@ -371,24 +561,27 @@ def build_skeleton(song_path: str, expected_bpm: int | None = None, progress=Non
     if progress:
         progress("sustains")
     sus = _sustains(y, sr, 60.0 / bpm)
+    band_sus = _band_sustains(y, sr, 60.0 / bpm)
     sk = Skeleton(bpm=bpm, duration=duration, beat_times=beat_times, points=points,
                   bar_energy=bar_energy, bar_vocal=bar_vocal, bar_start=bar_start, sustains=sus,
-                  meta={"sr": sr, "hop": hop})
+                  band_sustains=band_sus, meta={"sr": sr, "hop": hop})
     return sk
 
 
 def to_dict(sk: Skeleton) -> dict:
     return {
         "bpm": sk.bpm, "duration": sk.duration, "beat_times": sk.beat_times,
-        "points": [[p.t, p.bar, p.beat, p.sub, p.kick, p.snare, p.hat, p.vocal, p.full, p.weight, p.accent, p.cls, p.attack, int(p.peak), round(p.t_hit, 4), round(p.t_vocal, 4), int(p.melodic)] for p in sk.points],
+        "points": [[p.t, p.bar, p.beat, p.sub, p.kick, p.snare, p.hat, p.vocal, p.full, p.weight, p.accent, p.cls, p.attack, int(p.peak), round(p.t_hit, 4), round(p.t_vocal, 4), int(p.melodic), round(p.bass, 4), p.peaks] for p in sk.points],
         "bar_energy": sk.bar_energy, "bar_vocal": sk.bar_vocal, "bar_start": sk.bar_start,
-        "sustains": sk.sustains, "meta": sk.meta,
+        "sustains": sk.sustains, "band_sustains": sk.band_sustains, "meta": sk.meta,
     }
 
 
 def from_dict(d: dict) -> Skeleton:
     pts = [Point(*row[:13], bool(row[13]) if len(row) > 13 else True, float(row[14]) if len(row) > 14 else -1.0,
-                 float(row[15]) if len(row) > 15 else -1.0, bool(row[16]) if len(row) > 16 else False)
+                 float(row[15]) if len(row) > 15 else -1.0, bool(row[16]) if len(row) > 16 else False,
+                 float(row[17]) if len(row) > 17 else 0.0, int(row[18]) if len(row) > 18 else -1)
            for row in d["points"]]
     return Skeleton(d["bpm"], d["duration"], d["beat_times"], pts, d["bar_energy"], d["bar_vocal"],
-                    d["bar_start"], [tuple(s) for s in d.get("sustains", [])], d.get("meta", {}))
+                    d["bar_start"], [tuple(s) for s in d.get("sustains", [])],
+                    [(float(a), float(b), str(c)) for a, b, c in d.get("band_sustains", [])], d.get("meta", {}))

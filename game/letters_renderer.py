@@ -21,7 +21,8 @@ from . import keyboard as KB
 from . import models as M
 from .highway import BG_CENTER, BG_EDGE, STAMP_COLORS, STAMP_TEXT, WHITE, weight_of_time
 from .layout import Layout, DESIGN_W, DESIGN_H
-from .sprites import (OrbCache, load_noki_frames, render_text, blur, multiply_alpha, glow_disk, aa_circle)
+from .sprites import (OrbCache, load_noki_frames, render_text, blur, multiply_alpha, glow_disk, aa_circle,
+                      aa_rounded_rect, aa_line, beat_bounce, bounce_scale, quantize_scale, faded_text)
 
 PREEMPT = {"journey": 1.5, "classic": 1.1, "master": 0.8, "demon": 0.6}
 FREE_RADIUS = {"journey": 0, "classic": 90, "master": 150, "demon": 220}
@@ -174,6 +175,24 @@ class LettersRenderer:
         self.rings = {lane: aa_circle(L.S(self.r), KB.lane_color(lane), max(2, L.S(4))) for lane in range(4)}
         self.halos = {lane: glow_disk(L.S(self.r * 1.5), KB.lane_color(lane), 0.18) for lane in range(4)}
         self.glyph_px = L.S(int(self.r * 1.05))
+        self._scaled: dict[tuple, pygame.Surface] = {}       # disk / ring squashed by the beat bounce
+        hp = pygame.Rect(L.X(L.left + 60), L.Y(L.top + 26), L.S(360), L.S(10))
+        self.hp_track = aa_rounded_rect(hp.w, hp.h, L.S(5), (26, 26, 38))
+        self.hp_border = aa_rounded_rect(hp.w, hp.h, L.S(5), (120, 120, 140), 255, 1)
+
+    def _squashed(self, key: str, surf: pygame.Surface, sx: float, sy: float) -> pygame.Surface:
+        qx, qy = quantize_scale(sx), quantize_scale(sy)
+        if abs(qx - 1.0) < 1e-6 and abs(qy - 1.0) < 1e-6:
+            return surf
+        k = (key, qx, qy)
+        s = self._scaled.get(k)
+        if s is None:
+            w, h = surf.get_size()
+            s = pygame.transform.smoothscale(surf, (max(2, int(round(w * qx))), max(2, int(round(h * qy)))))
+            if len(self._scaled) >= 600:
+                self._scaled.clear()
+            self._scaled[k] = s
+        return s
 
     # ── events from the session ───────────────────────────────────────────
     def _xy(self, ev):
@@ -285,41 +304,51 @@ class LettersRenderer:
         if combo < 5:
             return
         L = self.L
-        s = multiply_alpha(render_text("display", L.S(200), str(combo), WHITE), 0.06)
+        s = faded_text("display", L.S(200), str(combo), WHITE, 0.06)
         screen.blit(s, s.get_rect(center=(L.X(960), L.Y(600))))
 
     def _draw_follow_lines(self, screen, t, vis):
+        """One straight stroke from the circle to hit now to the one after it (and a fainter one
+        on to the third), stopping at the circles' edges, so the order is never in doubt: the
+        line always leaves the current circle.  A pulse travels it from the last hit."""
         L = self.L
-        ov = pygame.Surface((L.win_w, L.win_h), pygame.SRCALPHA)
-        prev = None
-        drawn = False
-        for ev in vis:
-            if ev.hit:
-                prev = ev
+        pending = [ev for ev in vis if not ev.hit]
+        if not pending:
+            return
+        last_hit = next((ev for ev in reversed(vis) if ev.hit), None)
+        chain = ([last_hit] if last_hit is not None else []) + pending[:3]
+        r = L.S(self.r)
+        for i, (a, b) in enumerate(zip(chain, chain[1:])):
+            if b.timestamp - a.timestamp > 2.5:
+                break
+            x0, y0 = self._xy(a)
+            x1, y1 = self._xy(b)
+            dx, dy = L.X(x1) - L.X(x0), L.Y(y1) - L.Y(y0)
+            ln = math.hypot(dx, dy)
+            if ln < 2 * r + 8:
                 continue
-            if prev is not None and ev.timestamp - prev.timestamp < 2.5:
-                x0, y0 = self._xy(prev)
-                x1, y1 = self._xy(ev)
-                col = KB.lane_color(ev.lane)
-                a0 = 0.5 if not prev.hit else 0.7
-                k = min(1.0, max(0.0, (t - (ev.timestamp - self.preempt)) / (self.preempt * 0.4)))
-                pts = [(L.X(x0), L.Y(y0)), (L.X(x0 + (x1 - x0) * 0.35), L.Y(y0 + (y1 - y0) * 0.35 + 6)),
-                       (L.X(x0 + (x1 - x0) * 0.7), L.Y(y0 + (y1 - y0) * 0.7 - 6)), (L.X(x1), L.Y(y1))]
-                pygame.draw.lines(ov, (*col, int(255 * 0.30 * k)), False, pts, max(2, L.S(8)))
-                pygame.draw.aalines(ov, (255, 255, 255, int(255 * a0 * k)), False, pts)
-                # traveling pulse from prev hit time to this hit time
-                if prev.hit and prev.timestamp <= t <= ev.timestamp:
-                    p = (t - prev.timestamp) / max(1e-6, ev.timestamp - prev.timestamp)
-                    px, py = x0 + (x1 - x0) * p, y0 + (y1 - y0) * p
-                    pygame.draw.circle(ov, (255, 255, 255, 240), (L.X(px), L.Y(py)), max(3, L.S(7)))
-                drawn = True
-            prev = ev
-        if drawn:
-            screen.blit(ov, (0, 0))
+            ux, uy = dx / ln, dy / ln
+            p0 = (L.X(x0) + ux * (r + 4), L.Y(y0) + uy * (r + 4))
+            p1 = (L.X(x1) - ux * (r + 4), L.Y(y1) - uy * (r + 4))
+            k = min(1.0, max(0.0, (t - (b.timestamp - self.preempt)) / (self.preempt * 0.4)))
+            strength = (1.0, 0.45, 0.2)[min(2, i if last_hit is None else max(0, i - 1) + (0 if a.hit else 0))]
+            col = KB.lane_color(b.lane)
+            aa_line(screen, p0, p1, max(2, L.S(10)), col, int(255 * 0.22 * k * strength))
+            aa_line(screen, p0, p1, max(1, L.S(2)), (255, 255, 255), int(255 * 0.75 * k * strength))
+            if a.hit and a.timestamp <= t <= b.timestamp:
+                p = (t - a.timestamp) / max(1e-6, b.timestamp - a.timestamp)
+                px = p0[0] + (p1[0] - p0[0]) * p
+                py = p0[1] + (p1[1] - p0[1]) * p
+                dot = aa_circle(max(3, L.S(7)), (255, 255, 255), 0, 240)
+                screen.blit(dot, dot.get_rect(center=(int(px), int(py))))
 
     def _draw_circles(self, screen, t, vis):
         L = self.L
         r = L.S(self.r)
+        bi, bp = self.beat_phase(t)
+        amp = (1.0, 0.7, 0.85, 0.7)[bi % 4] if bi >= 0 else 0.7
+        sx, sy = bounce_scale(beat_bounce(bp), amp)
+        disk_b = self._squashed("disk", self.disk, sx, sy)
         for ev in reversed(vis):      # later circles under earlier ones
             x, y = self._xy(ev)
             cx, cy = L.X(x), L.Y(y)
@@ -338,16 +367,20 @@ class LettersRenderer:
                 continue
             k = 1.0 - max(0.0, until) / self.preempt        # 0 at spawn, 1 at hit
             fade = min(1.0, k / 0.4)
-            # approach ring 3r → 1r
-            ar = int(r * (3.0 - 2.0 * k))
-            ring = aa_circle(ar, KB.lane_color(lane), max(2, L.S(4 if k > 0.6 else 3)), alpha=int(255 * (0.4 + 0.6 * k) * fade))
+            # approach ring 3r → 1r; radius in 2 px steps and alpha in 16 steps so the cache hits
+            ar = int(r * (3.0 - 2.0 * k)) // 2 * 2
+            # the ring is built once per radius at full alpha (a distance field, the slow part)
+            # and faded with the cheap cached alpha copy
+            ring = multiply_alpha(aa_circle(ar, KB.lane_color(lane), max(2, L.S(4 if k > 0.6 else 3))),
+                                  (0.4 + 0.6 * k) * fade)
             screen.blit(ring, ring.get_rect(center=(cx, cy)))
             if k > 0.75:
                 h = multiply_alpha(self.halos[lane], (k - 0.75) / 0.25)
                 screen.blit(h, h.get_rect(center=(cx, cy)))
-            disk = self.disk if fade >= 0.99 else multiply_alpha(self.disk, fade)
+            disk = disk_b if fade >= 0.99 else multiply_alpha(disk_b, fade)
             screen.blit(disk, disk.get_rect(center=(cx, cy)))
-            rg = self.rings[lane] if fade >= 0.99 else multiply_alpha(self.rings[lane], fade)
+            ring_b = self._squashed(("ring", lane), self.rings[lane], sx, sy)
+            rg = ring_b if fade >= 0.99 else multiply_alpha(ring_b, fade)
             screen.blit(rg, rg.get_rect(center=(cx, cy)))
             g = render_text("display", self.glyph_px, ev.char.upper(), KB.INK)
             if fade < 0.99:
@@ -382,7 +415,7 @@ class LettersRenderer:
             s['x'] += s['vx'] * dt
             s['y'] += s['vy'] * dt
             k = s['age'] / s['life']
-            img = multiply_alpha(pygame.transform.rotate(s['img'], -math.degrees(s['ang'])), 1 - k * k)
+            img = multiply_alpha(pygame.transform.rotozoom(s['img'], -math.degrees(s['ang']), 1.0), 1 - k * k)
             screen.blit(img, img.get_rect(center=(L.X(s['x']), L.Y(s['y']))))
             keep.append(s)
         self.shards = keep
@@ -395,7 +428,8 @@ class LettersRenderer:
             p['y'] += p['vy'] * dt
             p['vy'] += 300 * dt
             k = 1 - p['age'] / p['life']
-            pygame.draw.circle(screen, p['col'], (L.X(p['x']), L.Y(p['y'])), max(1, int(L.S(p['r'] * k))))
+            dot = aa_circle(max(0.75, round(L.Sf(p['r'] * k) * 4) / 4), p['col'])
+            screen.blit(dot, dot.get_rect(center=(L.X(p['x']), L.Y(p['y']))))
             keep.append(p)
         self.sparks = keep
         keep = []
@@ -420,12 +454,13 @@ class LettersRenderer:
         L = self.L
         # HP bar top-left (no label)
         rect = pygame.Rect(L.X(L.left + 60), L.Y(L.top + 26), L.S(360), L.S(10))
-        pygame.draw.rect(screen, (26, 26, 38), rect, border_radius=L.S(5))
+        screen.blit(self.hp_track, rect.topleft)
         w = int(rect.w * max(0.0, self.hp) / 100.0)
         if w > 0:
             col = KB.lane_color(2) if self.hp > 30 else KB.MISS_RED
-            pygame.draw.rect(screen, col, (rect.x, rect.y, w, rect.h), border_radius=L.S(5))
-        pygame.draw.rect(screen, (120, 120, 140), rect, 1, border_radius=L.S(5))
+            fill = aa_rounded_rect(max(rect.h, w), rect.h, L.S(5), col)
+            screen.blit(fill, rect.topleft)
+        screen.blit(self.hp_border, rect.topleft)
         target = self.rhythm.get_score()
         self._score_shown += (target - self._score_shown) * min(1.0, 8.0 * dt)
         s = render_text("display", L.S(32), f"{int(self._score_shown):,} · {self.rhythm.get_accuracy():.1f} %", WHITE, cache=False)
@@ -448,13 +483,13 @@ class LettersRenderer:
             bi = int(t / self.beat_dur)
         norm = ((bi % 2) + p) / 2.0 if self.beat_dur >= 60.0 / 250.0 else ((bi % 4) + p) / 4.0
         frame = self.noki_bop[int(norm * n) % n]
-        x, y = L.X(L.left + 36), L.Y(L.bottom - 8) - frame.get_height()
+        x, y = L.X(L.left + 36), L.Y(L.bottom + 6) - frame.get_height()
         screen.blit(frame, (x, y))
         if self._hurt_t >= 0 and self.noki_hurt:
             idx = int((t - self._hurt_t) * 30 * 1.15)
             if 0 <= idx < len(self.noki_hurt):
                 hf = self.noki_hurt[idx]
-                screen.blit(hf, (x + (frame.get_width() - hf.get_width()) // 2, L.Y(L.bottom - 8) - hf.get_height()))
+                screen.blit(hf, (x + (frame.get_width() - hf.get_width()) // 2, L.Y(L.bottom + 6) - hf.get_height()))
             elif idx >= len(self.noki_hurt):
                 self._hurt_t = -1.0
 

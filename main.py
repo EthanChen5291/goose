@@ -182,7 +182,6 @@ WORD_BANK_2 = ["cat", "here", "me", "chosen", "beat", "hope", "soul", "true", "l
 
 def main():
     pygame.init()
-    pygame.mouse.set_visible(False)
     info = pygame.display.Info()
     screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.RESIZABLE)
     pygame.display.set_caption("Key Dash")

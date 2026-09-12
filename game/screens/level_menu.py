@@ -255,12 +255,14 @@ class LevelMenu:
         mode_y = arrow_y + 30 + seg_h // 2 + 8
         track = pygame.Rect(left_cx - seg_w, mode_y - seg_h // 2, seg_w * 2, seg_h)
         self._mode_rects = [pygame.Rect(track.x, track.y, seg_w, seg_h), pygame.Rect(track.x + seg_w, track.y, seg_w, seg_h)]
-        tr = pygame.Surface(track.size, pygame.SRCALPHA)
-        pygame.draw.rect(tr, (255, 255, 255, int(22 * at)), tr.get_rect(), border_radius=seg_h // 2)
-        pygame.draw.rect(tr, (255, 255, 255, int(70 * at)), tr.get_rect(), width=1, border_radius=seg_h // 2)
-        hx = int(self._mode_slide * seg_w)
-        pygame.draw.rect(tr, (235, 235, 245, int(255 * at)), (hx + 3, 3, seg_w - 6, seg_h - 6), border_radius=(seg_h - 6) // 2)
-        self.screen.blit(tr, track.topleft)
+        # anti-aliased pill: pygame's rounded rects step along the curve, so the track, its
+        # hairline and the sliding highlight are distance-field shapes (cached per size)
+        from ..sprites import aa_rounded_rect
+        self.screen.blit(aa_rounded_rect(track.w, track.h, seg_h / 2.0, (255, 255, 255), int(22 * at)), track.topleft)
+        self.screen.blit(aa_rounded_rect(track.w, track.h, seg_h / 2.0, (255, 255, 255), int(70 * at), 1), track.topleft)
+        hx = int(round(self._mode_slide * seg_w))
+        hl = aa_rounded_rect(seg_w - 6, seg_h - 6, (seg_h - 6) / 2.0, (235, 235, 245), int(255 * at))
+        self.screen.blit(hl, (track.x + hx + 3, track.y + 3))
         for i, m in enumerate(self.MODES):
             on = 1.0 - min(1.0, abs(self._mode_slide - i))       # how much the highlight sits under this one
             col = tuple(int(c) for c in (
@@ -398,9 +400,6 @@ class LevelMenu:
 
     @staticmethod
     def _draw_tri(screen, color, cx, cy, direction, w=14, h=22):
-        hw, hh = w // 2, h // 2
-        if direction == "left":
-            pts = [(cx - hw, cy), (cx + hw, cy - hh), (cx + hw, cy + hh)]
-        else:
-            pts = [(cx + hw, cy), (cx - hw, cy - hh), (cx - hw, cy + hh)]
-        pygame.draw.polygon(screen, color, pts)
+        from ..sprites import aa_triangle
+        tri = aa_triangle(w, h, color, "left" if direction == "left" else "right")
+        screen.blit(tri, tri.get_rect(center=(cx, cy)))

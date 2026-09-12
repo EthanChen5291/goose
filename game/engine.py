@@ -28,7 +28,7 @@ from analysis.audio_analysis import (
 from . import models as M
 from .menu import PauseScreen
 from .screens import SettingsPanel
-from .menu_utils import _FONT, draw_cursor
+from .menu_utils import _FONT
 from .rendering.effects import EffectsMixin
 from .mechanics import MechanicsMixin, BounceEvent
 from .rendering.word_renderer import WordRenderer, build_letter_glow_cache, _make_glow_surface, _NOTE_COLOR_RGB
@@ -604,7 +604,6 @@ class Game(EffectsMixin, MechanicsMixin):
                 self._update_paused(dt)
             else:
                 self.update(dt)
-            draw_cursor(self.screen)
             pygame.display.flip()
 
         pygame.mixer.music.stop()

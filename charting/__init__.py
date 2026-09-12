@@ -18,7 +18,7 @@ from dataclasses import asdict
 from game import constants as C
 from game import models as M
 
-GENERATOR_VERSION = "sc-1.2"   # sections (patterns, anchors, extra holds) + melody-weighted slots
+GENERATOR_VERSION = "sc-2.0"   # sections (patterns, anchors, extra holds) + melody-weighted slots
 
 
 def _cache_dir() -> str:
@@ -30,6 +30,34 @@ def _cache_dir() -> str:
     p = os.path.join(base, "charts")
     os.makedirs(p, exist_ok=True)
     return p
+
+
+def prune_stale_caches() -> None:
+    """A new generator never reads the old charts or skeletons: drop them once, on first use.
+
+    The chart cache holds a marker with the generator that wrote it; when the marker differs
+    from ``GENERATOR_VERSION`` every cached chart is removed, along with skeleton files from
+    older analysis versions, and the marker is rewritten.
+    """
+    try:
+        d = _cache_dir()
+        marker = os.path.join(d, "generator.txt")
+        current = open(marker, "r", encoding="utf-8").read().strip() if os.path.exists(marker) else ""
+        if current == GENERATOR_VERSION:
+            return
+        for f in os.listdir(d):
+            if f.endswith(".json"):
+                os.remove(os.path.join(d, f))
+        sk_dir = os.path.join(d, "skeletons")
+        if os.path.isdir(sk_dir):
+            from .engine import SKELETON_VERSION
+            for f in os.listdir(sk_dir):
+                if f.endswith(".json") and not f.endswith(f"_{SKELETON_VERSION}.json"):
+                    os.remove(os.path.join(sk_dir, f))
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write(GENERATOR_VERSION)
+    except Exception:
+        pass
 
 
 def song_fingerprint(path: str) -> str:
@@ -117,6 +145,7 @@ def build_chart(level: M.Level, song_path: str, progress=None) -> dict:
 
     Uses the chart cache when the same song + words + difficulty was charted before.
     """
+    prune_stale_caches()
     cid = chart_id(song_path, level.word_bank, level.difficulty, level.mode, level.bpm)
     cached = load_cached(cid)
     if cached is not None:

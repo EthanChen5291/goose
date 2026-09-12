@@ -26,7 +26,6 @@ from .highway import HighwayRenderer
 from .input import Input
 from .layout import Layout
 from .menu import PauseScreen
-from .menu_utils import draw_cursor
 from .rhythm import RhythmManager
 from .screens import SettingsPanel
 from .settings import load_settings
@@ -230,7 +229,6 @@ class PlaySession:
                 self._update_paused(dt)
             else:
                 self.update(dt)
-            draw_cursor(self.screen)
             pygame.display.flip()
         pygame.mixer.music.stop()
         self.score = self.rhythm.get_score()
@@ -358,11 +356,10 @@ class PlaySession:
             self.renderer.on_hold_complete(hold_before, self.rhythm._hold_judgment, t)
             if self._hitsound:
                 self._hitsound.play()
-        if self.rhythm.last_anchor_result is not None:
-            ar = self.rhythm.last_anchor_result
-            self.rhythm.last_anchor_result = None
+        for ar in self.rhythm.anchor_results:
             if ar.get("event") is not None and hasattr(self.renderer, "on_anchor_complete"):
                 self.renderer.on_anchor_complete(ar["event"], ar["judgment"].replace("hold_", ""), t)
+        self.rhythm.anchor_results = []
 
         self.input.update(events=events)
         for key in self.input.typed_chars:

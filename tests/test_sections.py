@@ -130,8 +130,14 @@ def test_journey_has_no_patterns_or_anchors_and_others_do():
     sk = _fake_skeleton()
     vibes = section_vibes(sk)
     rng = random.Random(1)
-    kinds_j = {ph.kind for ph in plan_phrases(sk, "journey", vibes, rng)}
-    assert kinds_j == {"words"}
+    # Easy holds too, but only the simple kind: never a pattern, never a chord or a drum voice
+    ph_j = plan_phrases(sk, "journey", vibes, rng)
+    assert "pattern" not in {ph.kind for ph in ph_j}
+    from charting.sections import plan_holds
+    for ph in ph_j:
+        if ph.kind == "anchor":
+            holds = plan_holds(sk, ph, "journey", random.Random(2))
+            assert len(holds) == 1 and not holds[0]["chord"]
     kinds_c = [ph.kind for ph in plan_phrases(sk, "classic", vibes, random.Random(1))]
     assert "pattern" in kinds_c or "anchor" in kinds_c
     # never two special phrases back to back on Fair

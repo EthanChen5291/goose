@@ -112,10 +112,11 @@ class RhythmManager:
         self._hold_press_time: float = 0.0
         self._hold_judgment: str = 'ok'
         self._hold_release_grace = 0.12
-        # the anchor: a hold on one hand that the other hand plays through
-        self._anchor: Optional[M.CharEvent] = None
-        self._anchor_judgment: str = 'ok'
-        self.last_anchor_result: Optional[dict] = None    # set when an anchor ends by time
+        # anchors: holds the other hand plays through — up to one per hand (a chord is two)
+        self._anchors: list[M.CharEvent] = []
+        self._anchor_judgments: dict[int, str] = {}
+        self._anchor_judgment: str = 'ok'                 # of the anchor started last
+        self.anchor_results: list[dict] = []              # anchors that ended by time since last read
 
         self._setup_timing_windows()
 
@@ -133,13 +134,33 @@ class RhythmManager:
             w = self.timing_windows['ok']
             if prev is not None:
                 gap = e.timestamp - prev.timestamp
-                w = min(w, max(0.060, gap * 0.5))
-                self._note_ok_window[id(prev)] = min(self._note_ok_window.get(id(prev), w), max(0.060, gap * 0.5))
+                chord = e.section_kind == "anchor" and prev.section_kind == "anchor" and gap < 0.06
+                if prev.section_kind == "grace":
+                    # a grace note is the small note before its main note: it gets a tight window of
+                    # its own and the main note keeps its full one (only the note after clamps it)
+                    self._note_ok_window[id(prev)] = min(self._note_ok_window.get(id(prev), w), max(0.045, gap * 0.6))
+                elif not chord:
+                    w = min(w, max(0.060, gap * 0.5))
+                    self._note_ok_window[id(prev)] = min(self._note_ok_window.get(id(prev), w), max(0.060, gap * 0.5))
             self._note_ok_window[id(e)] = w
             prev = e
 
     def ok_window_for(self, e: M.CharEvent) -> float:
         return self._note_ok_window.get(id(e), self.timing_windows['ok'])
+
+    @property
+    def _anchor(self) -> Optional[M.CharEvent]:
+        """The anchor started last (None when no hand is holding)."""
+        return self._anchors[-1] if self._anchors else None
+
+    @property
+    def last_anchor_result(self) -> Optional[dict]:
+        return self.anchor_results[-1] if self.anchor_results else None
+
+    @last_anchor_result.setter
+    def last_anchor_result(self, v) -> None:
+        if v is None:
+            self.anchor_results = []
 
     # ── time ───────────────────────────────────────────────────────────────
     def now(self) -> float:
@@ -158,8 +179,9 @@ class RhythmManager:
             if elapsed >= hold_end_time:
                 self._complete_hold(self._hold_judgment)
             return missed
-        if self._anchor is not None and elapsed >= self._anchor.timestamp + self._anchor.hold_duration:
-            self.last_anchor_result = self._complete_anchor()
+        for a in list(self._anchors):
+            if elapsed >= a.timestamp + a.hold_duration:
+                self.anchor_results.append(self._complete_anchor(a))
 
         while self.char_event_idx < len(self.beat_map):
             ev = self.beat_map[self.char_event_idx]
@@ -184,11 +206,20 @@ class RhythmManager:
             return base
         if self._active_hold is not None:
             return base
-        if self._anchor is not None and typed_char.lower() == self._anchor.char.lower():
-            return base                       # key repeat on the held anchor: nothing
+        if any(typed_char.lower() == a.char.lower() for a in self._anchors):
+            return base                       # key repeat on a held anchor: nothing
         ev = self.current_event()
         if ev is None or ev.is_rest or not ev.char:
             return base
+        # a chord (two anchors due together) may be pressed in either order
+        if ev.section_kind == "anchor" and typed_char.lower() != ev.char.lower():
+            j = self.char_event_idx + 1
+            if j < len(self.beat_map):
+                nxt = self.beat_map[j]
+                if nxt.section_kind == "anchor" and abs(nxt.timestamp - ev.timestamp) < 0.06 \
+                        and typed_char.lower() == nxt.char.lower():
+                    self.beat_map[self.char_event_idx], self.beat_map[j] = nxt, ev
+                    ev = nxt
 
         elapsed = self.now()
         gap_ms = -1.0 if self._last_press_t is None else (elapsed - self._last_press_t) * 1000.0
@@ -217,7 +248,8 @@ class RhythmManager:
         self.offsets_ms.append(offset * 1000.0)
 
         if ev.section_kind == "anchor" and ev.hold_duration > 0:
-            self._anchor = ev
+            self._anchors = [a for a in self._anchors if a.lane != ev.lane] + [ev]
+            self._anchor_judgments[id(ev)] = judgment
             self._anchor_judgment = judgment
             ev.hit = True
             self.char_event_idx += 1
@@ -249,16 +281,16 @@ class RhythmManager:
         return base
 
     def on_key_release(self, released_char: str) -> dict:
-        if self._anchor is not None and released_char.lower() == self._anchor.char.lower():
+        held = next((a for a in self._anchors if released_char.lower() == a.char.lower()), None)
+        if held is not None:
             elapsed = self.now()
-            end = self._anchor.timestamp + self._anchor.hold_duration
-            if elapsed >= end - self._anchor.hold_duration * self._hold_release_grace:
-                return self._complete_anchor()
-            ev = self._anchor
-            self._anchor = None
-            self._register_miss(ev, judgment='anchor_broken')
+            end = held.timestamp + held.hold_duration
+            if elapsed >= end - held.hold_duration * self._hold_release_grace:
+                return self._complete_anchor(held)
+            self._anchors.remove(held)
+            self._register_miss(held, judgment='anchor_broken')
             return {'hit': False, 'judgment': 'anchor_broken', 'offset': 0.0, 'time_diff': 0.0,
-                    'combo': self.combo, 'event': ev, 'is_word_complete': False, 'anchor': True}
+                    'combo': self.combo, 'event': held, 'is_word_complete': False, 'anchor': True}
         if self._active_hold is None:
             return {}
         if released_char.lower() != self._active_hold.char.lower():
@@ -284,13 +316,13 @@ class RhythmManager:
         return {'hit': True, 'judgment': f'hold_{judgment}', 'offset': 0.0, 'time_diff': 0.0,
                 'combo': self.combo, 'event': ev, 'is_word_complete': complete}
 
-    def _complete_anchor(self) -> dict:
-        ev = self._anchor
-        self._anchor = None
-        self._register_hold_hit(self._anchor_judgment, ev)
-        if ev is not None:
-            self._done_words.add(ev.word_id)
-        return {'hit': True, 'judgment': f'hold_{self._anchor_judgment}', 'offset': 0.0, 'time_diff': 0.0,
+    def _complete_anchor(self, ev: M.CharEvent) -> dict:
+        if ev in self._anchors:
+            self._anchors.remove(ev)
+        j = self._anchor_judgments.pop(id(ev), self._anchor_judgment)
+        self._register_hold_hit(j, ev)
+        self._done_words.add(ev.word_id)
+        return {'hit': True, 'judgment': f'hold_{j}', 'offset': 0.0, 'time_diff': 0.0,
                 'combo': self.combo, 'event': ev, 'is_word_complete': True, 'anchor': True}
 
     # ── judgment bookkeeping ───────────────────────────────────────────────
@@ -341,7 +373,7 @@ class RhythmManager:
         if prev_idx < 0:
             return False
         prev_event = self.beat_map[prev_idx]
-        if prev_event.is_rest or not prev_event.word_text:
+        if prev_event.is_rest or not prev_event.word_text or prev_event.section_kind == "grace":
             return False
         return prev_event.char_idx == len(prev_event.word_text) - 1
 
@@ -405,8 +437,8 @@ class RhythmManager:
         words: list[str] = []
         for i in range(self.char_event_idx, len(self.beat_map)):
             e = self.beat_map[i]
-            if e.is_rest or not e.char or e.word_id == cur_id:
-                continue
+            if e.is_rest or not e.char or e.word_id == cur_id or e.section_kind == "anchor":
+                continue                         # a held key is shown on its lane, not as a word
             if e.word_id not in seen:
                 seen.append(e.word_id)
                 words.append(e.word_text)

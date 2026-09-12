@@ -149,20 +149,242 @@ def glow_disk(radius: int, color: tuple, alpha: float, pad: int | None = None) -
         return blur(s, 3, 5)
 
 
-def aa_circle(radius: int, color: tuple, width: int = 0, alpha: int = 255) -> pygame.Surface:
-    """Anti-aliased circle (filled when width == 0) via 3× supersampling."""
-    ss = 3
-    r = radius * ss
-    pad = ss
-    size = (r + pad) * 2
-    big = pygame.Surface((size, size), pygame.SRCALPHA)
-    pygame.draw.circle(big, (*color, alpha), (size // 2, size // 2), r, width * ss if width else 0)
-    return pygame.transform.smoothscale(big, (size // ss, size // ss))
+def _alpha_surface(w: int, h: int, color: tuple, cov) -> pygame.Surface:
+    """One flat colour whose alpha channel is the float coverage array ``cov`` (shape (w, h), 0..1).
+
+    Colour goes in straight (not premultiplied) and the coverage only touches alpha, so a soft
+    edge fades the same colour out rather than dragging black in.
+    """
+    import numpy as np
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    s.fill((color[0], color[1], color[2], 0))
+    pygame.surfarray.pixels_alpha(s)[:] = np.clip(cov * 255.0, 0, 255).astype("uint8")
+    return s
+
+
+_shape_cache: dict[tuple, pygame.Surface] = {}
+_SHAPE_CACHE_MAX = 3000
+
+
+def _cache_put(key: tuple, s: pygame.Surface) -> None:
+    if len(_shape_cache) >= _SHAPE_CACHE_MAX:
+        _shape_cache.clear()
+    _shape_cache[key] = s
+
+
+def aa_circle(radius: float, color: tuple, width: float = 0, alpha: int = 255) -> pygame.Surface:
+    """Anti-aliased circle (filled when width == 0), rendered as a distance field: exact
+    coverage at every pixel, so it is smooth at any size.  Cached by (radius, colour, width, alpha)."""
+    r = round(float(radius), 1)
+    w = round(float(width), 1)
+    a = int(max(0, min(255, alpha)))
+    key = ("circle", r, tuple(color[:3]), w, a)
+    s = _shape_cache.get(key)
+    if s is not None:
+        return s
+    s = _build_circle(r, color, w, a)
+    if r <= 420:
+        _cache_put(key, s)
+    return s
+
+
+def _build_circle(r: float, color: tuple, w: float, a: int) -> pygame.Surface:
+    size = max(2, (int(math.ceil(r)) + 2) * 2)
+    try:
+        import numpy as np
+        ax = np.arange(size, dtype=np.float32) - (size - 1) / 2.0
+        d = np.sqrt(ax[:, None] ** 2 + ax[None, :] ** 2)
+        cov = np.clip(r - d + 0.5, 0.0, 1.0)
+        if 0 < w < r:
+            cov *= np.clip(d - (r - w) + 0.5, 0.0, 1.0)
+        return _alpha_surface(size, size, color, cov * (a / 255.0))
+    except Exception:
+        ss = 4
+        big = pygame.Surface((size * ss, size * ss), pygame.SRCALPHA)
+        pygame.draw.circle(big, (*color[:3], a), (size * ss // 2, size * ss // 2), int(r * ss), int(w * ss) if w else 0)
+        return pygame.transform.smoothscale(big, (size, size))
+
+
+def aa_rounded_rect(w: int, h: int, radius: float, color: tuple, alpha: int = 255, width: float = 0) -> pygame.Surface:
+    """Anti-aliased rounded rectangle of exactly (w, h) — filled, or an outline ``width`` px wide —
+    from a distance field, so the corners are smooth curves rather than pygame's stepped arcs."""
+    w, h = max(1, int(w)), max(1, int(h))
+    rad = max(0.0, min(float(radius), min(w, h) / 2.0))
+    a = int(max(0, min(255, alpha)))
+    key = ("rrect", w, h, round(rad, 1), tuple(color[:3]), a, round(float(width), 1))
+    s = _shape_cache.get(key)
+    if s is not None:
+        return s
+    try:
+        import numpy as np
+        xs = np.abs(np.arange(w, dtype=np.float32) - (w - 1) / 2.0) - (w / 2.0 - rad)
+        ys = np.abs(np.arange(h, dtype=np.float32) - (h - 1) / 2.0) - (h / 2.0 - rad)
+        qx = np.maximum(xs, 0.0)[:, None]
+        qy = np.maximum(ys, 0.0)[None, :]
+        d = np.sqrt(qx * qx + qy * qy) + np.minimum(np.maximum(xs[:, None], ys[None, :]), 0.0) - rad
+        cov = np.clip(0.5 - d, 0.0, 1.0)
+        if width > 0:
+            cov *= np.clip(d + float(width) + 0.5, 0.0, 1.0)
+        s = _alpha_surface(w, h, color, cov * (a / 255.0))
+    except Exception:
+        s = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(s, (*color[:3], a), s.get_rect(), int(width), border_radius=int(rad))
+    if w * h <= 1_500_000:
+        _cache_put(key, s)
+    return s
+
+
+def aa_triangle(w: int, h: int, color: tuple, direction: str = "left", alpha: int = 255) -> pygame.Surface:
+    """A small anti-aliased arrow head pointing ``direction`` (left | right | up | down), 4× supersampled."""
+    w, h = max(2, int(w)), max(2, int(h))
+    a = int(max(0, min(255, alpha)))
+    key = ("tri", w, h, tuple(color[:3]), direction, a)
+    s = _shape_cache.get(key)
+    if s is not None:
+        return s
+    ss = 4
+    big = pygame.Surface((w * ss, h * ss), pygame.SRCALPHA)
+    W, H = w * ss, h * ss
+    pts = {
+        "left": [(0, H // 2), (W, 0), (W, H)],
+        "right": [(W, H // 2), (0, 0), (0, H)],
+        "up": [(W // 2, 0), (0, H), (W, H)],
+        "down": [(W // 2, H), (0, 0), (W, 0)],
+    }[direction]
+    pygame.draw.polygon(big, (*color[:3], a), pts)
+    s = pygame.transform.smoothscale(big, (w, h))
+    _cache_put(key, s)
+    return s
+
+
+def aa_capsule_v(screen: pygame.Surface, cx: int, top: int, bottom: int, w: int, color: tuple, alpha: int = 255) -> None:
+    """A vertical rounded bar (a hold tail, an anchor bar) blitted straight onto ``screen``:
+    two cached anti-aliased half-disks and a flat fill between them, no overlap, so the alpha
+    is even along the whole bar."""
+    w = max(2, int(w))
+    h = int(bottom - top)
+    if h <= 0:
+        return
+    a = int(max(0, min(255, alpha)))
+    cap = aa_circle(w / 2.0, color, 0, a)
+    cw, ch = cap.get_size()                 # padded a little beyond the disk
+    if h <= ch:
+        s = aa_rounded_rect(w, h, min(w, h) / 2.0, color, a)
+        screen.blit(s, (cx - w // 2, top))
+        return
+    half = ch // 2
+    x0 = cx - cw // 2
+    screen.blit(cap, (x0, top), area=pygame.Rect(0, 0, cw, half))
+    mid = pygame.Surface((w, h - 2 * half), pygame.SRCALPHA)
+    mid.fill((*color[:3], a))
+    screen.blit(mid, (cx - w // 2, top + half))
+    screen.blit(cap, (x0, bottom - (ch - half)), area=pygame.Rect(0, half, cw, ch - half))
+
+
+def aa_line(screen: pygame.Surface, p0: tuple, p1: tuple, width: float, color: tuple, alpha: int = 255) -> None:
+    """An anti-aliased thick line with round ends, blended straight onto an *opaque* surface.
+
+    pygame.draw.line has no anti-aliasing, and gfxdraw blends wrongly on a transparent
+    overlay (it squares the alpha), so this goes to the screen itself: a filled quad with an
+    anti-aliased outline plus round caps."""
+    try:
+        from pygame import gfxdraw
+    except Exception:
+        pygame.draw.line(screen, color[:3], p0, p1, max(1, int(width)))
+        return
+    x0, y0 = float(p0[0]), float(p0[1])
+    x1, y1 = float(p1[0]), float(p1[1])
+    dx, dy = x1 - x0, y1 - y0
+    ln = math.hypot(dx, dy)
+    if ln < 0.5:
+        return
+    a = int(max(0, min(255, alpha)))
+    rgba = (color[0], color[1], color[2], a)
+    hw = max(0.5, float(width) / 2.0)
+    nx, ny = -dy / ln * hw, dx / ln * hw
+    pts = [(int(round(x0 + nx)), int(round(y0 + ny))), (int(round(x1 + nx)), int(round(y1 + ny))),
+           (int(round(x1 - nx)), int(round(y1 - ny))), (int(round(x0 - nx)), int(round(y0 - ny)))]
+    try:
+        if hw >= 1.0:
+            gfxdraw.filled_polygon(screen, pts, rgba)
+        gfxdraw.aapolygon(screen, pts, rgba)
+        if hw >= 2.0:
+            r = int(round(hw))
+            for (x, y) in ((x0, y0), (x1, y1)):
+                gfxdraw.filled_circle(screen, int(round(x)), int(round(y)), r, rgba)
+                gfxdraw.aacircle(screen, int(round(x)), int(round(y)), r, rgba)
+    except Exception:
+        pygame.draw.line(screen, color[:3], p0, p1, max(1, int(width)))
+
+
+# ── the beat bounce ───────────────────────────────────────────────────────
+def beat_bounce(p: float) -> float:
+    """A pulse over one beat, from the beat phase ``p`` (0 on the beat, 1 just before the next).
+
+    Swells in over the last 12 % before the beat, peaks (1.0) on it, falls fast through a
+    slight undershoot (-0.3) and settles by mid-beat: a bounce, not a metronome."""
+    if p >= 0.88:
+        u = (p - 0.88) / 0.12
+        return u * u * (3.0 - 2.0 * u)
+    if p < 0.30:
+        u = p / 0.30
+        return 1.0 - 1.30 * (1.0 - (1.0 - u) ** 2)
+    if p < 0.62:
+        u = (p - 0.30) / 0.32
+        return -0.30 * (1.0 - u * u * (3.0 - 2.0 * u))
+    return 0.0
+
+
+def bounce_scale(g: float, amp: float = 1.0) -> tuple[float, float]:
+    """(sx, sy) for a bounce value: a touch wider than tall at the top of the bounce, and when it
+    dips small it goes a little *thinner* rather than just smaller — the squash of something soft."""
+    if g >= 0.0:
+        return 1.0 + 0.060 * amp * g, 1.0 + 0.045 * amp * g
+    return 1.0 + 0.085 * amp * g, 1.0 + 0.030 * amp * g
+
+
+def quantize_scale(v: float, step: float = 0.005) -> float:
+    return round(round(v / step) * step, 3)
+
+
+_faded_cache: dict[tuple, pygame.Surface] = {}
+
+
+def faded_text(kind: str, px: int, text: str, color: tuple, alpha: float) -> pygame.Surface:
+    """render_text at a fixed opacity, cached: the queue rows and the dim letters of the word
+    block are drawn every frame, and fading a fresh copy each time was a copy per glyph per frame."""
+    a = round(max(0.0, min(1.0, alpha)), 2)
+    if a >= 1.0:
+        return render_text(kind, px, text, color)
+    key = (kind, px, text, color, a)
+    s = _faded_cache.get(key)
+    if s is None:
+        s = multiply_alpha(render_text(kind, px, text, color), a)
+        if len(_faded_cache) >= 3000:
+            _faded_cache.clear()
+        _faded_cache[key] = s
+    return s
+
+
+_alpha_cache: dict[tuple, tuple[pygame.Surface, pygame.Surface]] = {}
+_ALPHA_CACHE_MAX = 2000
 
 
 def multiply_alpha(surf: pygame.Surface, alpha: float) -> pygame.Surface:
+    """``surf`` with its alpha scaled by ``alpha``, in 32 steps and cached per source surface,
+    so a note fading in over a second costs one copy, not sixty."""
+    a = int(round(32 * max(0.0, min(1.0, alpha))))
+    if a >= 32:
+        return surf
+    key = (id(surf), a)
+    hit = _alpha_cache.get(key)
+    if hit is not None and hit[0] is surf:        # the id may be reused once a surface is freed
+        return hit[1]
     s = surf.copy()
-    s.fill((255, 255, 255, int(255 * max(0.0, min(1.0, alpha)))), special_flags=pygame.BLEND_RGBA_MULT)
+    s.fill((255, 255, 255, int(255 * a / 32)), special_flags=pygame.BLEND_RGBA_MULT)
+    if len(_alpha_cache) >= _ALPHA_CACHE_MAX:
+        _alpha_cache.clear()
+    _alpha_cache[key] = (surf, s)
     return s
 
 
@@ -170,9 +392,9 @@ def multiply_alpha(surf: pygame.Surface, alpha: float) -> pygame.Surface:
 def _folder_key(folder: str, height: int) -> str:
     try:
         st = os.stat(folder)
-        raw = f"{folder}|{int(st.st_mtime)}|{height}|v3"
+        raw = f"{folder}|{int(st.st_mtime)}|{height}|v4"
     except OSError:
-        raw = f"{folder}|{height}|v3"
+        raw = f"{folder}|{height}|v4"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -191,10 +413,23 @@ def _derive_alpha(surf: pygame.Surface) -> pygame.Surface:
         dark = rgb.sum(axis=2) < 48
         try:
             from scipy import ndimage
-            labels, _n = ndimage.label(dark)
+            labels, n = ndimage.label(dark)
             border = np.unique(np.concatenate([labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1]]))
             border = border[border != 0]
-            bg = np.isin(labels, border)
+            bg_ids = set(int(b) for b in border)
+            # the enclosed black *between the headband and the head* is background too.  It is
+            # told from the cat by what surrounds it: the body, the head and the tail are each
+            # rimmed by the white outline, the gap under the band is rimmed mostly by red
+            sizes = ndimage.sum(dark, labels, range(1, n + 1))
+            red = (rgb[..., 0] > 140) & (rgb[..., 1] < 110) & (rgb[..., 2] < 110)
+            for i, sz in enumerate(sizes):
+                lid = i + 1
+                if lid in bg_ids or sz < 200:
+                    continue
+                rim = ndimage.binary_dilation(labels == lid, iterations=5) & ~dark
+                if rim.sum() and (red & rim).sum() / rim.sum() >= 0.33:
+                    bg_ids.add(lid)
+            bg = np.isin(labels, list(bg_ids))
         except Exception:
             bg = dark
         out = surf.copy()
@@ -332,7 +567,13 @@ class OrbCache:
         self._rings: dict[tuple, pygame.Surface] = {}
         self._stars: dict[tuple, pygame.Surface] = {}
         self._shards: dict[int, list[pygame.Surface]] = {}
+        self._scaled: dict[tuple, pygame.Surface] = {}
         self.glyph_px = layout.S(int(layout.orb_r * 1.22))     # the letter fills the disk
+        try:
+            import numpy as np
+            np.random.RandomState(0)        # numpy loads its random module lazily: do it now, not on the first press
+        except Exception:
+            pass
 
     def body(self, lane: int, weight: int, color: tuple | None = None) -> pygame.Surface:
         key = (lane, weight, color)
@@ -341,17 +582,66 @@ class OrbCache:
             return s
         col = color or KB.lane_color(lane)
         w = max(0, min(4, weight))
-        ring_w = max(2, int(round(WEIGHT_RING[w] * self.s)))
-        ss = 3
-        r = self.r * ss
-        pad = ring_w * ss + 2 * ss
-        size = (r + pad) * 2
-        big = pygame.Surface((size, size), pygame.SRCALPHA)
-        c = size // 2
-        pygame.draw.circle(big, (255, 255, 255, int(255 * WEIGHT_DISK_ALPHA[w])), (c, c), r)
-        pygame.draw.circle(big, (*col, 255), (c, c), r, ring_w * ss)
-        s = pygame.transform.smoothscale(big, (size // ss, size // ss))
+        ring_w = max(2.0, WEIGHT_RING[w] * self.s)
+        r = float(self.r)
+        disk_a = WEIGHT_DISK_ALPHA[w]
+        size = (int(math.ceil(r + ring_w)) + 3) * 2
+        try:
+            # a distance field: the white disk and the coloured ring share one smooth edge, and
+            # the ring's inner edge is a smooth blend too, so nothing steps at any size
+            import numpy as np
+            ax = np.arange(size, dtype=np.float32) - (size - 1) / 2.0
+            d = np.sqrt(ax[:, None] ** 2 + ax[None, :] ** 2)
+            outer = np.clip(r - d + 0.5, 0.0, 1.0)
+            ringk = np.clip(d - (r - ring_w) + 0.5, 0.0, 1.0)
+            rgb = np.empty((size, size, 3), dtype=np.float32)
+            for i in range(3):
+                rgb[..., i] = 255.0 * (1.0 - ringk) + col[i] * ringk
+            s = pygame.Surface((size, size), pygame.SRCALPHA)
+            pygame.surfarray.blit_array(s, np.clip(rgb, 0, 255).astype("uint8"))
+            pygame.surfarray.pixels_alpha(s)[:] = (outer * (disk_a * (1.0 - ringk) + ringk) * 255).astype("uint8")
+        except Exception:
+            ss = 4
+            big = pygame.Surface((size * ss, size * ss), pygame.SRCALPHA)
+            c = size * ss // 2
+            pygame.draw.circle(big, (255, 255, 255, int(255 * disk_a)), (c, c), int(r * ss))
+            pygame.draw.circle(big, (*col, 255), (c, c), int(r * ss), int(ring_w * ss))
+            s = pygame.transform.smoothscale(big, (size, size))
         self._bodies[key] = s
+        return s
+
+    def body_scaled(self, lane: int, weight: int, color: tuple | None, sx: float, sy: float) -> pygame.Surface:
+        """The orb body squashed by (sx, sy) — the beat bounce.  Quantised and cached, and every
+        orb on screen shares one beat phase, so a frame costs at most one rescale per orb kind."""
+        qx, qy = quantize_scale(sx), quantize_scale(sy)
+        base = self.body(lane, weight, color)
+        if abs(qx - 1.0) < 1e-6 and abs(qy - 1.0) < 1e-6:
+            return base
+        key = (lane, weight, color, qx, qy)
+        s = self._scaled.get(key)
+        if s is not None:
+            return s
+        bw, bh = base.get_size()
+        s = pygame.transform.smoothscale(base, (max(2, int(round(bw * qx))), max(2, int(round(bh * qy)))))
+        if len(self._scaled) >= 4000:
+            self._scaled.clear()
+        self._scaled[key] = s
+        return s
+
+    def glyph_scaled(self, ch: str, ink: tuple, alpha: float, sx: float, sy: float) -> pygame.Surface:
+        qx, qy = quantize_scale(sx), quantize_scale(sy)
+        base = self.glyph(ch, ink, alpha)
+        if abs(qx - 1.0) < 1e-6 and abs(qy - 1.0) < 1e-6:
+            return base
+        key = ("g", ch, ink, round(alpha, 2), qx, qy)
+        s = self._scaled.get(key)
+        if s is not None:
+            return s
+        bw, bh = base.get_size()
+        s = pygame.transform.smoothscale(base, (max(1, int(round(bw * qx))), max(1, int(round(bh * qy)))))
+        if len(self._scaled) >= 4000:
+            self._scaled.clear()
+        self._scaled[key] = s
         return s
 
     def halo(self, lane: int, weight: int, color: tuple | None = None) -> pygame.Surface | None:
@@ -423,15 +713,17 @@ class OrbCache:
         a distance field rather than a polygon so it is smooth at any size and reads like
         the figure's inked lines; the inner half of each mark is lifted towards white like a
         marker stroke.  Lengths and angles wobble a little, deterministically per lane, so it
-        never looks stamped.  Baked per (lane, quantised radius, quantised alpha).
+        never looks stamped.  Baked per (lane, quantised radius, colour) at full alpha — a
+        4 ms build — and faded through the cached alpha copy, so a burst's fade-out costs
+        one copy a step, not a rebuild.
         """
         radius = max(6, int(radius) // STAR_R_STEP * STAR_R_STEP)
-        key = (lane, radius, round(alpha, 1), color)
+        key = (lane, radius, color)
         s = self._stars.get(key)
         if s is not None:
-            return s
+            return multiply_alpha(s, alpha)
         col = color or KB.lane_color(lane)
-        a = max(0.0, min(1.0, alpha))
+        a = 1.0
         size = radius * 2
         try:
             import numpy as np
@@ -473,7 +765,7 @@ class OrbCache:
             pygame.draw.circle(out, (*col, int(255 * a)), (radius, radius), max(2, radius // 3), max(1, radius // 12))
         if len(self._stars) < 1200:
             self._stars[key] = out
-        return out
+        return multiply_alpha(out, alpha)
 
     def shards(self, lane: int, color: tuple | None = None) -> list[pygame.Surface]:
         key = lane if color is None else (lane, color)
@@ -486,14 +778,18 @@ class OrbCache:
         for k in range(6):
             ln = int(base * (0.7 + 0.1 * (k % 3)))
             wd = max(3, int(base * 0.28))
-            surf = pygame.Surface((ln + 4, wd + 4), pygame.SRCALPHA)
-            pygame.draw.polygon(surf, (*col, 230), [(2, wd // 2 + 2), (ln + 2, 2), (ln + 2, wd + 2)])
-            out.append(surf)
+            ss = 4
+            surf = pygame.Surface(((ln + 4) * ss, (wd + 4) * ss), pygame.SRCALPHA)
+            pygame.draw.polygon(surf, (*col, 230), [(2 * ss, (wd // 2 + 2) * ss), ((ln + 2) * ss, 2 * ss), ((ln + 2) * ss, (wd + 2) * ss)])
+            out.append(pygame.transform.smoothscale(surf, (ln + 4, wd + 4)))
         self._shards[key] = out  # type: ignore[index]
         return out
 
 
 def petal_surface(size: int, color: tuple) -> pygame.Surface:
-    s = pygame.Surface((size, size), pygame.SRCALPHA)
-    pygame.draw.ellipse(s, (*color, 255), (size * 0.15, 0, size * 0.7, size))
-    return pygame.transform.rotate(s, -25)
+    """A small tilted petal, drawn 4× and scaled down so its edge is smooth."""
+    ss = 4
+    big = pygame.Surface((size * ss, size * ss), pygame.SRCALPHA)
+    pygame.draw.ellipse(big, (*color, 255), (size * ss * 0.15, 0, size * ss * 0.7, size * ss))
+    big = pygame.transform.rotate(big, -25)
+    return pygame.transform.smoothscale(big, (max(1, big.get_width() // ss), max(1, big.get_height() // ss)))

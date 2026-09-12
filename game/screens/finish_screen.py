@@ -21,7 +21,6 @@ import pygame
 
 from .. import audio_manager
 from .. import keyboard as KB
-from ..menu_utils import draw_cursor
 from ..sprites import get_font, render_text, multiply_alpha, glow_disk, load_noki_frames, aa_circle
 
 GRADE_COLORS = {
@@ -394,7 +393,6 @@ class FinishScreen:
             self.draw()
             if self._typing_open and self._typing_panel is not None:
                 self._typing_panel.draw(dt)
-            draw_cursor(self.screen)
             pygame.display.flip()
             if result is not None:
                 return result

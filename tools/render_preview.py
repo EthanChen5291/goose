@@ -55,11 +55,10 @@ def main():
         now[0] = t
         for ev in rm.update():
             hw.on_miss(ev, t)
-        if getattr(rm, "last_anchor_result", None) is not None:
-            ar = rm.last_anchor_result
-            rm.last_anchor_result = None
+        for ar in getattr(rm, "anchor_results", []):
             if ar.get("event") is not None and hasattr(hw, "on_anchor_complete"):
                 hw.on_anchor_complete(ar["event"], ar["judgment"].replace("hold_", ""), t)
+        rm.anchor_results = []
         ev = rm.current_event()
         if ev is not None and not ev.is_rest and ev.char and not ev.hit and rm._active_hold is None:
             off = rng.gauss(0.0, 0.03)

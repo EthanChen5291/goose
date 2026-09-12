@@ -21,7 +21,6 @@ from .menu_utils import (
     _load_custom_bpms,
     _save_custom_bpms,
     start_pick_audio_file,
-    draw_cursor,
 )
 from .ui_components import Button, Petal
 from .screens import TitleScreen, LevelSelect, LevelMenu, FileUploadScreen
@@ -84,6 +83,24 @@ class MenuManager:
         self._video_last_surf  = None
         self._video_frame_dur  = 1.0 / 30.0
         self._video_start_wall: float | None = None   # set on first rendered frame
+        self._video_duration   = 0.0                  # seconds, from frame count
+
+        # ── Tiny skip button (bottom-right of the intro video) ────────────────
+        self._skip_img: pygame.Surface | None = None
+        self._skip_rect: pygame.Rect | None = None
+        try:
+            _raw_skip = pygame.image.load(os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                "assets", "images", "playbutton.png",
+            )).convert_alpha()
+            _skip_h = max(16, int(screen.get_height() * 0.035))
+            _skip_w = max(1, int(_raw_skip.get_width() * _skip_h / _raw_skip.get_height()))
+            self._skip_img = pygame.transform.smoothscale(_raw_skip, (_skip_w, _skip_h))
+            _m = max(10, int(screen.get_height() * 0.02))
+            self._skip_rect = self._skip_img.get_rect(
+                bottomright=(screen.get_width() - _m, screen.get_height() - _m))
+        except Exception:
+            self._skip_img = None
 
         # ── Waiting ("...") screen ────────────────────────────────────────────
         self._show_waiting  = (music is not None and music.needs_start)
@@ -103,6 +120,9 @@ class MenuManager:
                         fps = cap.get(cv2.CAP_PROP_FPS)
                         if fps > 0:
                             self._video_frame_dur = 1.0 / fps
+                        _frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                        if _frames > 0:
+                            self._video_duration = _frames * self._video_frame_dur
                         self._video_cap = cap
                         if self._music:
                             self._music.start_intro()
@@ -238,6 +258,20 @@ class MenuManager:
                         sw2, sh2 = self.screen.get_size()
                         x = (sw2 - self._video_last_surf.get_width()) // 2
                         self.screen.blit(self._video_last_surf, (x, 0))
+
+                    # ── Skip button ──────────────────────────────────────────
+                    if not self._video_done and self._skip_img is not None and self._skip_rect is not None:
+                        hovered = self._skip_rect.collidepoint(mouse_pos)
+                        self._skip_img.set_alpha(255 if hovered else 150)
+                        self.screen.blit(self._skip_img, self._skip_rect)
+                        if mouse_clicked and hovered:
+                            _audio.play_click()
+                            self._video_cap.release()
+                            self._video_cap  = None
+                            self._video_done = True
+                            if self._music:
+                                self._music.skip_intro_to(self._video_duration)
+                            _title_ready = (self._music is None) or self._music.title_ready
 
             if self.state == "title":
                 if _title_ready:
@@ -392,7 +426,6 @@ class MenuManager:
                     if self.state == "title":
                         self.title_screen.reset()
 
-            draw_cursor(self.screen)
             pygame.display.flip()
 
     def _handle_upload(self, file_path, word_bank: list[str] | None):

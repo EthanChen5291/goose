@@ -1,14 +1,14 @@
 """
 Letters mode planner: one letter per surviving accent, no words.
 
-Consumes the same skeleton as Words.  A focus set (home row by default, or
-the letters of the song's word list) and a seeded planner assign letters with
-the ergonomic rules from the blueprint: downbeats to index or middle fingers
-alternating hands from the previous strong beat, streams alternate hands, no
-same finger under 250 ms, every letter of the set at least once per 16 bars,
-quiet bars get downbeats only.  Each letter is its own one-letter word to the
-judgment core.  Positions on the field are placed by the renderer from the
-key anchor plus a seeded offset inside the tier's free radius.
+Consumes the same cells as Words — the phrase's layer, Normal's selection thinned for Easy
+and extended for Hard and Demon — so the two modes of a song share their notes.  A focus set
+(home row by default, or the letters of the song's word list) and a seeded planner assign
+letters with the ergonomic rules from the blueprint: downbeats to index or middle fingers
+alternating hands from the previous strong beat, streams alternate hands, no same finger
+under 250 ms, every letter of the set at least once per 16 bars.  Each letter is its own
+one-letter word to the judgment core.  Positions on the field are placed by the renderer
+from the key anchor plus a seeded offset inside the tier's free radius.
 """
 from __future__ import annotations
 
@@ -18,16 +18,11 @@ from game import keyboard as KB
 from game import models as M
 from . import skeleton as SK
 
-# per bar and vibe: (bar beats, playable beats, max letters) — same idea as the Words cells
-CELLS = {
-    "journey": {"burst": (4, 3.5, 4), "drive": (4, 3.5, 3), "groove": (4, 3, 3), "sustain": (4, 3, 2)},
-    "classic": {"burst": (4, 4, 6), "drive": (4, 4, 5), "groove": (4, 3.5, 4), "sustain": (4, 3, 3)},
-    "master":  {"burst": (4, 4, 10), "drive": (4, 4, 8), "groove": (4, 4, 6), "sustain": (4, 3.5, 4)},
-    "demon":   {"burst": (4, 4, 14), "drive": (4, 4, 12), "groove": (4, 4, 8), "sustain": (4, 4, 6)},
-}
-FINEST = {"journey": 4, "classic": 2, "master": 1, "demon": 1}
-MIN_GAP = {"journey": 0.40, "classic": 0.24, "master": 0.16, "demon": 0.11}
 HOME = "asdfghjkl"
+# Letters is the osu!-style field: every circle is a new place to look, so it takes only a share
+# of the Words cells' notes (the strongest ones) and never two circles closer than this
+LETTERS_SHARE = {"journey": 0.5, "classic": 0.6, "master": 0.75, "demon": 0.9}
+LETTERS_GAP = {"journey": 0.50, "classic": 0.36, "master": 0.28, "demon": 0.22}
 
 
 def focus_letters(word_bank: list[str]) -> str:
@@ -37,30 +32,32 @@ def focus_letters(word_bank: list[str]) -> str:
     return "".join(letters)
 
 
-def plan_letters(sk: SK.Skeleton, tier_key: str, letters: str, rng: random.Random,
-                 vibes: list[str] | None = None) -> list[M.CharEvent]:
-    finest = FINEST.get(tier_key, 2)
-    min_gap = MIN_GAP.get(tier_key, 0.24)
-    cells = CELLS.get(tier_key, CELLS["classic"])
+def plan_letters(sk: SK.Skeleton, tier, letters: str, rng: random.Random,
+                 vibes: list[str] | None = None, plans=None) -> list[M.CharEvent]:
+    """``tier`` is an engine Tier (already fitted to the tempo) or a tier key."""
+    from .engine import TIERS, tier_for_bpm, build_cells, section_vibes
+    if isinstance(tier, str):
+        tier = tier_for_bpm(TIERS.get(tier, TIERS["classic"]), sk.bpm)
     if vibes is None:
-        from .engine import section_vibes
         vibes = section_vibes(sk)
-    beat = 60.0 / sk.bpm
     letters = "".join(sorted(set(c for c in letters.lower() if c.isalpha()))) or HOME
     left = [c for c in letters if KB.hand_of(c) == 0] or list("asdf")
     right = [c for c in letters if KB.hand_of(c) == 1] or list("jkl")
     counts = {c: 0 for c in letters}
 
-    # slots per bar: the strongest accents of the playable part, strong beats first
-    slots: list[SK.Point] = []
-    for b in range(sk.n_bars):
-        t0 = sk.bar_start[b]
-        t1 = sk.bar_start[b + 1] if b + 1 < sk.n_bars else sk.beat_times[-1]
-        _cell_beats, play_beats, k = cells[vibes[b] if b < len(vibes) else "groove"]
-        play_end = min(t1, t0 + play_beats * beat)
-        kept, _cand = SK.select_slots(sk.points_in(t0, play_end - 1e-6), k, min_gap, finest)
-        slots.extend(kept)
-    slots.sort(key=lambda p: p.t)
+    from .engine import _thin
+    share = LETTERS_SHARE.get(tier.key, 0.6)
+    gap = max(tier.min_gap, LETTERS_GAP.get(tier.key, 0.36))
+    slots: list[tuple[SK.Point, str]] = []
+    last_t = -1e9
+    for cell in build_cells(sk, tier, vibes, plans):
+        kept = _thin(cell.slots, cell.layer_of, share, gap)
+        for p in kept:
+            if p.t - last_t < gap:
+                continue
+            slots.append((p, cell.layer_of(p)))
+            last_t = p.t
+    slots.sort(key=lambda pl: pl[0].t)
 
     events: list[M.CharEvent] = []
     prev_char: str | None = None
@@ -84,7 +81,7 @@ def plan_letters(sk: SK.Skeleton, tier_key: str, letters: str, rng: random.Rando
         cands.sort(key=lambda c: (counts[c], rng.random()))
         return cands[0]
 
-    for p in slots:
+    for p, layer in slots:
         if p.bar // 16 != bar_seen:
             bar_seen = p.bar // 16
             for c in counts:
@@ -102,7 +99,7 @@ def plan_letters(sk: SK.Skeleton, tier_key: str, letters: str, rng: random.Rando
             ch = choose(list(letters), p.t, None)
         counts[ch] += 1
         wid += 1
-        events.append(M.CharEvent(char=ch, timestamp=float(SK.hit_time(p)), word_text=ch, char_idx=0,
+        events.append(M.CharEvent(char=ch, timestamp=float(SK.hit_time(p, layer)), word_text=ch, char_idx=0,
                                   beat_position=float(p.bar * 4 + p.beat + p.sub / 4), section=int(p.bar // 4),
                                   weight=p.metric, lane=KB.lane_of(ch), word_id=wid, section_kind="letters"))
         prev_char, prev_t = ch, p.t

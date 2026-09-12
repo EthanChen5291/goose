@@ -1,4 +1,4 @@
-from game.layout import Layout
+from game.layout import Layout, NOKI_DROP
 from game import keyboard as KB
 
 
@@ -28,7 +28,8 @@ def test_noki_is_a_quarter_of_the_screen_in_the_left_column():
 def test_noki_stands_on_the_slot_line():
     L = Layout(1920, 1080)
     x, y, w, h = L.noki_rect
-    assert y + h == L.slot_y
+    # the feet sit a touch below the line so the figure reads as standing on it, not hovering
+    assert y + h == L.slot_y + NOKI_DROP
 
 
 def test_lanes_are_hand_zones():

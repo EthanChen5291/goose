@@ -32,12 +32,27 @@
       "stars": 0,
       "max_combo": 49,
       "misses": 216
+    },
+    "classic@letters": 2305,
+    "classic@letters_stats": {
+      "accuracy": 10.0,
+      "grade": "D",
+      "stars": 0,
+      "max_combo": 2,
+      "misses": 8
     }
   },
   "Catch Catch.mp3": {
-    "classic": 73216,
+    "classic": 678824,
     "master": 131900,
-    "demon": 42405
+    "demon": 42405,
+    "classic_stats": {
+      "accuracy": 86.07142857142858,
+      "grade": "B",
+      "stars": 1,
+      "max_combo": 72,
+      "misses": 11
+    }
   },
   "Fluffing A Duck.mp3": {
     "classic": 17802,
@@ -190,6 +205,14 @@
       "stars": 0,
       "max_combo": 39,
       "misses": 49
+    },
+    "classic": 218649,
+    "classic_stats": {
+      "accuracy": 82.16216216216216,
+      "grade": "B",
+      "stars": 1,
+      "max_combo": 47,
+      "misses": 23
     }
   }
 }

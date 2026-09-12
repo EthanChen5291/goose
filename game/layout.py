@@ -33,6 +33,7 @@ ORB_R = 46              # big enough that the letter reads from across the room
 SLOT_RING_R = 52
 NOKI_H = 285            # a quarter of the screen height (a third read as 25 % too big)
 NOKI_W = 220
+NOKI_DROP = 14          # Noki's feet sit this far below the slot line: standing on it, not floating over it
 
 
 @dataclass
@@ -161,4 +162,4 @@ class Layout:
         x = int((self.left + HIGHWAY_X0) / 2 - w / 2)
         if self.noki_placement == "corner":
             return (x, DESIGN_H - h - 8, w, h)
-        return (x, self.slot_y - h, w, h)
+        return (x, self.slot_y - h + NOKI_DROP, w, h)
