@@ -1,0 +1,10 @@
+node_modules
+dist
+
+# Derived by tools/export_web.py from assets/ — regenerate, don't commit.
+# The charts and fonts already live in the repo once; the audio never should.
+public/audio/
+public/charts/
+public/img/
+public/fonts/
+public/index.json
