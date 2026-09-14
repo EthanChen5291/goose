@@ -1,6 +1,6 @@
 /**
- * The finish: DOWN!, the win show cut-ins, the dialogue, then results.
- *     node tools/probe-win.mjs        # needs `vite preview` on :4173
+ * The finish: DOWN!, the stance's three cuts, the dialogue, then results.
+ *     node tools/probe-win.mjs        # BASE defaults to the dev server on :5173
  */
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
@@ -14,7 +14,7 @@ async function pickSong(page, title) {
   }
   throw new Error(`no level ${title}`)
 }
-const BASE = process.env.BASE ?? 'http://localhost:4173'
+const BASE = process.env.BASE ?? 'http://localhost:5173'
 const SHOTS = process.env.SHOTS ?? '.scratch/shots'
 const SONG = process.env.SONG ?? 'Scorpion'
 mkdirSync(SHOTS, { recursive: true })
@@ -64,18 +64,9 @@ await page.waitForTimeout(150)
 await page.screenshot({ path: `${SHOTS}/win-0-down.png` })
 await page.waitForTimeout(500)
 await page.screenshot({ path: `${SHOTS}/win-1-flyoff.png` })
-// the cinematic: shoot it at its beats
-await page.waitForFunction(() => Boolean(window.__cine), null, { timeout: 20000 })
-for (const [name, at] of [['cine-01-flare', 0.7], ['cine-02-wide', 2.0], ['cine-03-exchange', 3.5], ['cine-04-crash', 5.0],
-                          ['cine-05-vortex', 5.75], ['cine-06-cross', 7.1], ['cine-07-throw', 8.55], ['cine-08-orbit', 9.2],
-                          ['cine-09-fist', 9.88], ['cine-10-hold', 11.0], ['cine-11-white', 12.05], ['cine-12-card', 12.5],
-                          ['cine-13-final', 14.3]]) {
-  await page.waitForFunction((at) => window.__cine.t >= at, at, { timeout: 20000 }).catch(() => null)
-  await page.screenshot({ path: `${SHOTS}/${name}.png` })
-}
 await page.waitForSelector('.win-root', { timeout: 20000 })
 const t0 = Date.now()
-for (const [name, at] of [['win-2-boots', 350], ['win-3-bicep', 1500], ['win-4-face', 2700], ['win-5-line', 3400]]) {
+for (const [name, at] of [['win-2-grow', 150], ['win-3-low', 600], ['win-3b-low', 1300], ['win-4-high', 1900], ['win-4b-high', 2700], ['win-5-face', 3300], ['win-5b-line', 4400]]) {
   const wait = t0 + at - Date.now()
   if (wait > 0) await page.waitForTimeout(wait)
   await page.screenshot({ path: `${SHOTS}/${name}.png` })

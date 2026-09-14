@@ -284,6 +284,46 @@ def whiff() -> np.ndarray:
 
 
 
+def bodyslam() -> np.ndarray:
+    """the whole goose landing flat: a deep boom under a wide slap, then the ground settling"""
+    tt = t(0.34)
+    boom_ = square(tt, np.linspace(80, 30, len(tt)), 0.5) * env(len(tt), 0.002, 0.3, 2.5)
+    slap_ = lowpass(noise(len(tt)), np.linspace(4000, 400, len(tt))) * env(len(tt), 0.0005, 0.1, 3)
+    settle = lowpass(noise(len(tt)), 600) * env(len(tt), 0.05, 0.3, 1.5) * 0.4
+    return quantise(0.9 * boom_ + 0.8 * slap_ + settle)
+
+
+def dash() -> np.ndarray:
+    """feet leaving the grass in a hurry: a short rising whoosh with a scuff"""
+    tt = t(0.14)
+    air = lowpass(noise(len(tt)), np.linspace(600, 5000, len(tt))) * env(len(tt), 0.03, 0.1, 1.5)
+    scuff = lowpass(noise(len(tt)), 2000) * env(len(tt), 0.001, 0.03, 4)
+    return quantise((0.6 * air + 0.5 * scuff) * 0.7)
+
+
+def bat() -> np.ndarray:
+    """a wing batting the rock out of the air: a hard knock and a ping"""
+    tt = t(0.12)
+    knock = square(tt, np.linspace(320, 120, len(tt)), 0.4) * env(len(tt), 0.001, 0.07, 4)
+    ping = square(tt, 1900, 0.5) * env(len(tt), 0.001, 0.05, 3) * 0.3
+    crack = lowpass(noise(len(tt)), 5000) * env(len(tt), 0.0005, 0.02, 5)
+    return quantise(0.8 * knock + ping + 0.6 * crack)
+
+
+def smash() -> np.ndarray:
+    """the overhead smash landing: a crack, a boom, and a rising pillar of crackle after it"""
+    tt = t(0.5)
+    crack = lowpass(noise(len(tt)), 6000) * env(len(tt), 0.0005, 0.03, 5)
+    boom_ = square(tt, np.linspace(120, 40, len(tt)), 0.5) * env(len(tt), 0.002, 0.22, 3)
+    pillar = lowpass(noise(len(tt)), np.linspace(1500, 4500, len(tt))) * env(len(tt), 0.08, 0.4, 1.5) * 0.35
+    sparks = np.zeros(len(tt))
+    for at in (0.12, 0.17, 0.23, 0.3, 0.38):
+        i = int(at * SR)
+        n = int(0.01 * SR)
+        sparks[i:i + n] += lowpass(noise(n), 7000) * env(n, 0.0005, 0.009, 4) * 0.5
+    return quantise(0.7 * crack + 0.9 * boom_ + pillar + sparks)
+
+
 def run_steps() -> np.ndarray:
     """a cartoon footstep patter — quick alternating hollow knocks, eight a second,
     a second and a half of it (the loader loops it)"""
@@ -383,6 +423,42 @@ def down_card() -> np.ndarray:
     return quantise(0.9 * slam + ring)
 
 
+def flip() -> np.ndarray:
+    """the beak flick that sends the enemy skyward: a snap and a fast rising whistle"""
+    tt = t(0.32)
+    snap = noise(len(tt)) * env(len(tt), 0.001, 0.03, 3)
+    f = 500 + 1400 * (tt / 0.32) ** 1.6
+    whistle = np.sin(2 * np.pi * np.cumsum(f) / SR) * env(len(tt), 0.02, 0.3, 1.5) * 0.5
+    return quantise(snap + whistle)
+
+
+def lash() -> np.ndarray:
+    """the tail lash coming down: a whip crack with a deep thud under it"""
+    tt = t(0.36)
+    crack = noise(len(tt)) * env(len(tt), 0.001, 0.05, 4)
+    crack = lowpass(crack, 5000 - 4000 * tt / 0.36)
+    thud = np.sin(2 * np.pi * np.cumsum(90 - 50 * tt / 0.36) / SR) * env(len(tt), 0.005, 0.3, 2) * 0.8
+    return quantise(crack * 0.7 + thud)
+
+
+def roll() -> np.ndarray:
+    """the ball hitting the enemy into the wall: a rumble, a knock, and the wall ringing a little"""
+    tt = t(0.4)
+    rumble = lowpass(noise(len(tt)), 300) * env(len(tt), 0.01, 0.35, 1.5) * 1.6
+    knock = np.sin(2 * np.pi * 140 * tt) * env(len(tt), 0.002, 0.12, 3) * 0.7
+    ring = square(tt, 660, 0.3) * env(len(tt), 0.02, 0.25, 3) * 0.12
+    return quantise(rumble + knock + ring)
+
+
+def whip_boom() -> np.ndarray:
+    """the hold released clean: the crack of the lash and a boom that fills the room"""
+    tt = t(0.6)
+    crack = noise(len(tt)) * env(len(tt), 0.001, 0.04, 4)
+    boom = np.sin(2 * np.pi * np.cumsum(70 - 30 * tt / 0.6) / SR) * env(len(tt), 0.01, 0.55, 2)
+    hiss = lowpass(noise(len(tt)), 1800) * env(len(tt), 0.02, 0.4, 2) * 0.35
+    return quantise(crack * 0.6 + boom + hiss)
+
+
 SOUNDS = {
     "slap": slap, "slap2": slap2, "whip": whip, "peck": peck, "honk": honk, "hurt": hurt,
     "enemy_hit": enemy_hit, "miss": miss, "perfect": perfect, "word": word, "combo": combo,
@@ -394,6 +470,8 @@ SOUNDS = {
     "run_steps": run_steps, "menace": menace, "glass": glass, "slash": slash, "kanji": kanji,
     "flash_hit": flash_hit, "crash_zoom": crash_zoom, "text_tick": text_tick, "fight_card": fight_card,
     "throw_far": throw_far, "eye_glow": eye_glow, "down_card": down_card,
+    "bodyslam": bodyslam, "dash": dash, "bat": bat, "smash": smash,
+    "flip": flip, "lash": lash, "roll": roll, "whip_boom": whip_boom,
 }
 
 

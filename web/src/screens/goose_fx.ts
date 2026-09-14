@@ -53,7 +53,7 @@ interface Live { mesh: THREE.InstancedMesh; kind: EmoteKind; born: number; at: T
 export class Emotes {
   private pool: Record<EmoteKind, THREE.InstancedMesh[]>
   private live: Live[] = []
-  constructor(private scene: THREE.Scene, cell = 0.55) {
+  constructor(scene: THREE.Scene, private cell = 0.55) {
     this.pool = { bang: [], quest: [], note: [], grr: [], star: [] }
     for (const k of Object.keys(GLYPHS) as EmoteKind[]) {
       const proto = glyphMesh(GLYPHS[k], COLORS[k], cell)
@@ -73,7 +73,8 @@ export class Emotes {
     m.position.copy(at)
     this.live.push({ mesh: m, kind, born: now, at: at.clone(), orbit, phase })
   }
-  update(now: number, camera: THREE.Camera): void {
+  /** `pxAt(p)` is the world size of one game pixel at `p`; a glyph cell is drawn ~2.2 px */
+  update(now: number, camera: THREE.Camera, pxAt: (p: THREE.Vector3) => number): void {
     for (let i = this.live.length - 1; i >= 0; i--) {
       const e = this.live[i]
       const age = now - e.born
@@ -88,6 +89,7 @@ export class Emotes {
         e.mesh.position.set(e.at.x + Math.sin(age * 9 + e.phase) * 0.25, e.at.y + step * 3.2 + (age > life * 0.75 ? 1 : 0), e.at.z)
       }
       e.mesh.quaternion.copy(camera.quaternion)
+      e.mesh.scale.setScalar(Math.max(0.05, pxAt(e.mesh.position) * 2.2 / this.cell))
     }
   }
   clear(): void {
@@ -152,8 +154,12 @@ export class Bits {
 }
 
 export function feathers(scene: THREE.Scene): Bits {
-  return new Bits(scene, new THREE.BoxGeometry(0.9, 0.14, 0.5), 0xebf0ef, 64, 9, 0.12, 1.7, 3)
+  return new Bits(scene, new THREE.BoxGeometry(0.9, 0.14, 0.5), 0xebf0ef, 96, 9, 0.12, 1.7, 3)
 }
 export function dust(scene: THREE.Scene): Bits {
   return new Bits(scene, new THREE.BoxGeometry(0.9, 0.9, 0.9), 0xc9c2a8, 32, 14, 0.05, 0.55, 0)
+}
+/** cloud puffs: big white blocks that hang almost still and thin out in steps — the trail of a launch */
+export function puffs(scene: THREE.Scene): Bits {
+  return new Bits(scene, new THREE.BoxGeometry(2.6, 1.6, 2.2), 0xffffff, 48, -0.6, 0.02, 1.1, 0)
 }

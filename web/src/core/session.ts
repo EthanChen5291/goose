@@ -155,9 +155,11 @@ export class PlaySession {
   private onKeyDown = (e: KeyboardEvent): void => {
     if (e.repeat) return
     if (e.key === 'Escape') { this.togglePause(); return }
-    if (e.key === ' ') { e.preventDefault(); this.renderer.tryRush(this.clock.now()); return }
     const t = this.clock.atEvent(e.timeStamp)
-    const key = this.renderer.keyAlias?.(e.key, t) ?? e.key
+    // a renderer may give Space a letter of its own (the duel's jump); otherwise it is the rush
+    const alias = this.renderer.keyAlias?.(e.key, t) ?? null
+    if (alias === null && e.key === ' ') { e.preventDefault(); this.renderer.tryRush(this.clock.now()); return }
+    const key = alias ?? e.key
     if (key !== e.key) e.preventDefault()
     if (key.length !== 1) return
     this.held.add(key.toLowerCase())

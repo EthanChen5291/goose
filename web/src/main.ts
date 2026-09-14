@@ -21,9 +21,8 @@ import { buildTitle } from './screens/title'
 import { buildSelect } from './screens/select'
 import type { SelectScreen } from './screens/select'
 import { gooseMovie } from './screens/goose3d'
-import type { GooseMovie, PoseName } from './screens/goose3d'
+import type { GooseMovie } from './screens/goose3d'
 import { buildLoading } from './screens/loading'
-import { PixelCinematic } from './px/cinematic'
 import { buildWinShow } from './screens/winshow'
 import { loadManifest } from './screens/pxchrome'
 import type { CustomSong } from './screens/library'
@@ -32,10 +31,12 @@ import type { RhythmManager } from './core/rhythm'
 import { PxAssets } from './px/assets'
 import { PixelCanvas } from './px/canvas'
 import { PixelHighway } from './px/highway'
-import { PixelLetters } from './px/letters'
+import { PixelDuel } from './px/duel'
+import { loadEnemyVoxels } from './px/duel3d'
 import { levelFor } from './px/levels'
 import { buildPause } from './screens/pause'
 import { buildResults } from './screens/results'
+import { buildGallery } from './screens/gallery'
 
 interface ChartEntry { id: string; notes: number; bars: number }
 interface SongEntry {
@@ -61,7 +62,8 @@ const SFX = ['slap', 'slap2', 'whip', 'peck', 'honk', 'hurt', 'enemy_hit', 'miss
              'combo', 'jump', 'slide', 'ui_move', 'ui_click', 'pause', 'win', 'lose',
              'whoosh', 'rock_break', 'uppercut', 'thud', 'splat', 'windup', 'megahonk', 'shift_tick',
              'shift_go', 'boom', 'whiff', 'run_steps', 'menace', 'glass', 'slash', 'kanji', 'flash_hit',
-             'crash_zoom', 'text_tick', 'fight_card', 'throw_far', 'eye_glow', 'down_card']
+             'crash_zoom', 'text_tick', 'fight_card', 'throw_far', 'eye_glow', 'down_card',
+             'bodyslam', 'dash', 'bat', 'smash', 'flip', 'lash', 'roll', 'whip_boom']
 const sfxUrl = (n: string) => `audio/sfx/${n}.wav`
 const TIERS: Tier[] = ['journey', 'classic', 'master', 'demon']
 const MODES: Mode[] = ['words', 'letters']
@@ -87,10 +89,22 @@ let liveMenu: { el: HTMLElement; stop: () => void } | null = null
 let liveSelect: SelectScreen | null = null
 /** the one 3D movie: the shell owns it, the title, the select and the win show borrow its canvas */
 let moviePromise: Promise<GooseMovie> | null = null
+/** the movie's cues, as sounds: name → effect and volume */
+const CUES: Record<string, [string, number]> = {
+  jump: ['jump', 0.5], land: ['thud', 0.3], whoosh: ['whoosh', 0.5], flash: ['flash_hit', 0.6],
+  crash_zoom: ['crash_zoom', 0.7], trap: ['whoosh', 0.6], thud: ['thud', 0.6], honk: ['honk', 0.45],
+  run_steps: ['run_steps', 0.4], slap: ['slap', 0.7], splat: ['splat', 0.6], throw_far: ['throw_far', 0.6],
+  beam: ['windup', 0.5], ufo: ['whoosh', 0.6], menace: ['menace', 0.6],
+}
 function getMovie(): Promise<GooseMovie> {
-  moviePromise ??= loadManifest().then((m) => gooseMovie(m))
+  moviePromise ??= loadManifest().then((m) => gooseMovie(m)).then((mv) => {
+    mv.onCue = (name) => { const c = CUES[name]; if (c) ui(c[0], c[1]) }
+    return mv
+  })
   return moviePromise
 }
+/** the plate the goose stands on when the title comes back: the one it left by */
+let titleAt = 0
 /** a menu or cutscene sound: loaded on first use */
 function ui(name: string, vol = 0.6, delay = 0): void {
   void audio.load(sfxUrl(name)).then(() => audio.playSfx(sfxUrl(name), audio.ctx.currentTime + delay, vol)).catch(() => null)
@@ -110,7 +124,67 @@ async function boot(): Promise<void> {
   index = await (await fetch('index.json')).json()
   await refreshCustom()
   selected = allSongs()[0] ?? null
+  for (const ev of ['hashchange', 'popstate']) window.addEventListener(ev, () => { if (atGallery()) void openGallery() })
+  if (atGallery()) { void openGallery(); return }
   renderTitle()
+}
+
+/** the gallery's route: /gallery, or #gallery for a build served without a history fallback */
+function atGallery(): boolean {
+  return location.hash === '#gallery' || /\/gallery\/?$/.test(location.pathname)
+}
+
+/** the one Pixi application, made on first need and kept */
+async function ensurePixi(): Promise<Application> {
+  if (pixi === null) {
+    pixi = new Application()
+    await pixi.init({
+      resizeTo: window,
+      // pixel art: no smoothing anywhere, and sprites land on whole pixels
+      antialias: false,
+      roundPixels: true,
+      backgroundColor: 0x07060d,
+      resolution: window.devicePixelRatio || 1,
+      autoDensity: true,
+      preference: 'webgl',
+    })
+    pixi.ticker.stop()
+  }
+  return pixi
+}
+
+/**
+ * The move gallery at `/gallery` (`#gallery` also works): every animation the
+ * goose and the enemies have, all of them looping side by side, or one of them
+ * examined on its own clock.  Back returns to the title.
+ */
+let liveGallery: { el: HTMLElement; stop: () => void } | null = null
+async function openGallery(): Promise<void> {
+  if (liveGallery) return
+  cancelAnimationFrame(raf)
+  liveMenu?.stop()
+  liveMenu = null
+  const px = await ensurePixi()
+  pxAssets = await PxAssets.load()
+  canvas ??= new PixelCanvas(px.renderer)
+  await Promise.all(SFX.map((n) => audio.load(sfxUrl(n)).catch(() => null)))
+  px.stage.removeChildren()
+  px.stage.addChild(canvas.view)
+  canvas.world.removeChildren()
+  const g = buildGallery({
+    app: px, canvas, assets: pxAssets,
+    sfx: (name, delay = 0) => { void audio.unlock().then(() => audio.playSfx(sfxUrl(name), audio.ctx.currentTime + Math.max(0, delay), 0.8)).catch(() => null) },
+    onBack: () => {
+      g.stop()
+      liveGallery = null
+      px.stage.removeChildren()
+      if (atGallery()) history.replaceState(null, '', location.pathname.replace(/\/gallery\/?$/, '/'))
+      renderTitle()
+    },
+  })
+  liveGallery = g
+  canvas.world.addChild(g.stage)
+  app.replaceChildren(px.canvas, g.el)
 }
 
 async function refreshCustom(): Promise<void> {
@@ -140,11 +214,29 @@ function showMenu(built: { el: HTMLElement; stop: () => void }): void {
 
 function renderTitle(): void {
   showMenu(buildTitle({
-    onPlay: () => { click(); renderMenu() },
-    onSettings: () => { click(); openSettings(renderTitle) },
+    onPlay: () => { titleAt = 0; renderMenu() },
+    onImport: () => { titleAt = 1; openImport(renderTitle) },
+    onSettings: () => { titleAt = 2; openSettings(renderTitle) },
     onMove: () => ui('ui_move', 0.5),
     movie: getMovie(),
+    at: titleAt,
   }))
+}
+
+/** the import panel over whatever is on screen; `back` rebuilds that screen when it closes */
+function openImport(back: () => void): void {
+  const panel = buildImportScreen(
+    async () => { await refreshCustom() },
+    async () => {
+      panel.remove()
+      await refreshCustom()
+      if (selected && !allSongs().some((s2) => s2.id === selected!.id)) {
+        selected = allSongs()[0] ?? null
+      }
+      back()
+    },
+  )
+  document.body.appendChild(panel)
 }
 
 function click(): void { void audio.load(sfxUrl('ui_click')).then(() => audio.playSfx(sfxUrl('ui_click'), undefined, 0.6)).catch(() => null) }
@@ -161,12 +253,13 @@ function renderMenu(): void {
   const built = buildSelect({
     sfx: (n) => ui(n, 0.55),
     movie: getMovie(),
+    arrive: true,
     songs: allSongs(),
     selectedId: selected?.id ?? null,
     tier,
     mode,
     tiers: TIERS.map((t) => ({ key: t, label: TIER_LABEL[t] })),
-    modes: MODES.map((m) => ({ key: m, label: m === 'words' ? 'Words' : 'Letters' })),
+    modes: MODES.map((m) => ({ key: m, label: m === 'words' ? 'Words' : 'Duel' })),
     bestOf: (s2, t, m) => {
       const b = bestFor(s2.id, t, m)
       return b ? { grade: b.grade, accuracy: b.accuracy, score: b.score } : null
@@ -178,46 +271,24 @@ function renderMenu(): void {
       const e = (s2 as SongEntry).charts[`${tier}|${mode}`]
       if (e) void enterLevel(s2 as SongEntry, e)
     },
-    onUpload: () => {
-      const panel = buildImportScreen(
-        async () => { await refreshCustom() },
-        async () => {
-          panel.remove()
-          await refreshCustom()
-          if (selected && !allSongs().some((s2) => s2.id === selected!.id)) {
-            selected = allSongs()[0] ?? null
-          }
-          renderMenu()
-        },
-      )
-      document.body.appendChild(panel)
-    },
-    onBack: () => renderTitle(),
+    onUpload: () => openImport(renderMenu),
+    onBack: () => { titleAt = 0; renderTitle() },
   })
   liveSelect = built
   showMenu(built)
 }
 
-/** which JoJo pose a level gets */
-function poseFor(id: string): PoseName {
-  let h = 0
-  for (const c of id) h = (h * 33 + c.charCodeAt(0)) >>> 0
-  return (['rohan', 'dio', 'giorno'] as PoseName[])[h % 3]
-}
-
 /**
- * Leaving the menu for a level: the panels fly past as the camera slams in on
- * the goose, the goose grows a body and strikes its pose under ド ド ド for two
- * seconds, then black — the goose running while the song loads — then the fight.
+ * Leaving the map for a level: the chrome fades while a saucer races in over
+ * the goose, lifts it in its beam, and a pair of gloves clap it flat — the
+ * sprite, at last — then black, the goose running while the song loads, then
+ * the fight.
  */
 async function enterLevel(songEntry: SongEntry, chartEntry: ChartEntry): Promise<void> {
   const sel = liveSelect
   const movie = await getMovie()
   await audio.unlock()
-  if (sel) await Promise.all([sel.flyOut(), movie.zoomIn(0.55)])
-  ui('kanji', 0.7, 0.42)
-  ui('menace', 0.7, 0.46)
-  await movie.pose(poseFor(songEntry.id), 2)
+  if (sel) await Promise.all([sel.flyOut(), movie.abduct()])
   await play(songEntry, chartEntry)
 }
 
@@ -252,20 +323,7 @@ async function play(songEntry: SongEntry, chartEntry: ChartEntry): Promise<void>
   ])
 
   await loading.done
-  if (pixi === null) {
-    pixi = new Application()
-    await pixi.init({
-      resizeTo: window,
-      // pixel art: no smoothing anywhere, and sprites land on whole pixels
-      antialias: false,
-      roundPixels: true,
-      backgroundColor: 0x07060d,
-      resolution: window.devicePixelRatio || 1,
-      autoDensity: true,
-      preference: 'webgl',
-    })
-    pixi.ticker.stop()
-  }
+  pixi = await ensurePixi()
   liveMenu?.stop()
   liveMenu = null
   app.replaceChildren(pixi.canvas)
@@ -275,6 +333,8 @@ async function play(songEntry: SongEntry, chartEntry: ChartEntry): Promise<void>
   canvas ??= new PixelCanvas(pixi.renderer)
   canvas.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio || 1)
   const level = levelFor(songEntry.id)
+  // the duel builds its enemy from the sprite's strips; have them solid before the count-in
+  if (mode === 'letters') await loadEnemyVoxels(pxAssets.manifest, level.enemy.char).catch(() => null)
   lastPlay = { song: songEntry, chart: chartEntry }
 
   session = new PlaySession({
@@ -287,7 +347,7 @@ async function play(songEntry: SongEntry, chartEntry: ChartEntry): Promise<void>
       void layout
       pixi!.stage.removeChildren()
       const r = mode === 'letters'
-        ? new PixelLetters(canvas!, pxAssets!, song, rhythm, tier, settings, songEntry.title, level)
+        ? new PixelDuel(canvas!, pxAssets!, song, rhythm, tier, settings, songEntry.title, level)
         : new PixelHighway(canvas!, pxAssets!, song, rhythm, tier, settings, songEntry.title, level)
       const sfxVol = Number(settings.hitsound_volume ?? 0.9)
       r.sfx = (name, delay = 0) => audio.playSfx(sfxUrl(name), audio.ctx.currentTime + Math.max(0, delay), sfxVol)
@@ -296,7 +356,7 @@ async function play(songEntry: SongEntry, chartEntry: ChartEntry): Promise<void>
       pixi!.stage.addChild(canvas!.view)
       return r
     },
-    onFinish: (stats, r) => { hidePause(); void finish(stats, songEntry, (r as PixelHighway | PixelLetters).won) },
+    onFinish: (stats, r) => { hidePause(); void finish(stats, songEntry, (r as PixelHighway | PixelDuel).won) },
     onPause: (paused) => { audio.playSfx(sfxUrl('pause'), undefined, 0.5); if (paused) showPause(); else hidePause() },
   })
 
@@ -320,7 +380,7 @@ function frame(now: number): void {
     if (pixelRun && canvas && session) {
       // the buffer follows the window; a size change re-lays the screen out
       if (canvas.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio || 1)) {
-        (session.renderer as PixelHighway | PixelLetters).relayout()
+        (session.renderer as PixelHighway | PixelDuel).relayout()
       }
       canvas.render()
     }
@@ -329,13 +389,13 @@ function frame(now: number): void {
 }
 
 /**
- * The song is over.  A win goes to the show-off first — the muscled goose in
- * cut-ins with a line — skippable with Enter; then the results.
+ * The song is over.  A win goes to the stance first — the goose grown into
+ * the hero, the JoJo pose in three cuts with a line — skippable with Enter;
+ * then the results.
  */
 async function finish(stats: Record<string, number | string>, songEntry: SongEntry, won: boolean): Promise<void> {
   cancelAnimationFrame(raf)
   if (won) {
-    await runCinematic(levelFor(songEntry.id))
     const movie = await getMovie()
     const show = buildWinShow(movie, songEntry.id, (n) => ui(n, 0.6))
     app.replaceChildren(show.el)
@@ -344,50 +404,8 @@ async function finish(stats: Record<string, number | string>, songEntry: SongEnt
       window.addEventListener('keydown', skip)
     })])
     show.stop()
-    movie.wander()
   }
   showResults(stats, songEntry)
-}
-
-/**
- * The stickman battle, drawn into the pixel buffer the fight just used, on its
- * own clock.  Enter or Escape skips it.
- */
-function runCinematic(level: ReturnType<typeof levelFor>): Promise<void> {
-  return new Promise<void>((resolve) => {
-    if (!pixi || !canvas || !pxAssets) { resolve(); return }
-    const cine = new PixelCinematic(canvas, pxAssets, level)
-    const sfxVol = Number(settings.hitsound_volume ?? 0.9)
-    cine.sfx = (name, delay = 0) => audio.playSfx(sfxUrl(name), audio.ctx.currentTime + Math.max(0, delay), sfxVol)
-    canvas.world.removeChildren()
-    canvas.world.addChild(cine.stage)
-    pixi.stage.removeChildren()
-    pixi.stage.addChild(canvas.view)
-    app.replaceChildren(pixi.canvas)
-    const t0 = performance.now()
-    let id = 0
-    const cineHandle = { t: 0 }
-    ;(window as unknown as { __cine: { t: number } }).__cine = cineHandle
-    const end = (): void => {
-      cancelAnimationFrame(id)
-      window.removeEventListener('keydown', onKey)
-      cine.destroy()
-      resolve()
-    }
-    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Enter' || e.key === 'Escape') end() }
-    window.addEventListener('keydown', onKey)
-    const tick = (): void => {
-      id = requestAnimationFrame(tick)
-      const t = (performance.now() - t0) / 1000
-      cineHandle.t = t
-      if (canvas!.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio || 1)) cine.layout()
-      cine.draw(t)
-      canvas!.render()
-      pixi!.renderer.render(pixi!.stage)
-      if (cine.finished) end()
-    }
-    id = requestAnimationFrame(tick)
-  })
 }
 
 let pauseEl: HTMLElement | null = null

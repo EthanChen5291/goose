@@ -37,6 +37,7 @@ export class PixelScene {
   readonly container = new Container()
   private layers: { sprite: TilingSprite; depth: number }[] = []
   private drift = new Graphics()
+  private platform = new Graphics()
   private tint = new Graphics()
   private raysGfx = new Graphics()
   private decor = new Graphics()
@@ -60,7 +61,7 @@ export class PixelScene {
   private rng = Math.random
 
   constructor(private assets: PxAssets) {
-    this.container.addChild(this.drift, this.decor, this.tint, this.raysGfx, this.flashGfx)
+    this.container.addChild(this.platform, this.drift, this.decor, this.tint, this.raysGfx, this.flashGfx)
   }
 
   set(id: string): void {
@@ -132,8 +133,8 @@ export class PixelScene {
 
   update(t: number, dt: number, energy: number): void {
     const white = this.whiteOut(t)
-    // a slow drift, faster in loud bars; whole pixels per layer
-    this.scroll += dt * (3 + 6 * energy)
+    // the clouds drift on their own, and faster in loud bars; whole pixels per layer
+    this.scroll += dt * (5 + 8 * energy)
     for (const l of this.layers) {
       l.sprite.tilePosition.x = -Math.round(this.scroll * l.depth)
       l.sprite.visible = this.mode !== 'void' && !white
@@ -144,6 +145,7 @@ export class PixelScene {
       const step = Math.floor(t / 2) % DRIFT.length
       this.drift.rect(0, 0, this.w, this.h).fill({ color: DRIFT[step], alpha: 0.09 })
     }
+    this.drawPlatform(t, white)
     this.drawDecor(t, white)
     // the tint steps in and out over a few frames rather than sliding
     const step = dt * 6
@@ -174,6 +176,25 @@ export class PixelScene {
     if (t < this.flashUntil) {
       this.flashGfx.rect(0, 0, this.w, this.h).fill({ color: 0xffffff, alpha: this.flashA })
     }
+  }
+
+  /**
+   * The floor: a slab floating in the sky for the fighters to stand on, a
+   * light edge along its top that pulses with the beat rows, dark glass below
+   * it so the word block and the HUD read against any sky.
+   */
+  private drawPlatform(t: number, white: boolean): void {
+    const g = this.platform
+    g.clear()
+    if (this.mode === 'void' || !this.info) return
+    const gy = this.groundY
+    const edge = white ? 0x17181a : 0xf4f6ff
+    g.rect(0, gy, this.w, this.h - gy).fill({ color: white ? 0xffffff : 0x0b0d18, alpha: white ? 1 : 0.62 })
+    g.rect(0, gy - 1, this.w, 1).fill({ color: edge, alpha: 0.9 })
+    g.rect(0, gy, this.w, 1).fill({ color: white ? 0x17181a : 0x6e7a9a, alpha: 0.6 })
+    // a thin under-glow at the slab's far edge, stepped so it stays a pixel thing
+    const k = Math.floor((t * 2) % 2)
+    g.rect(0, gy + 2 + k, this.w, 1).fill({ color: white ? 0x17181a : 0x2a3150, alpha: 0.5 })
   }
 
   /** a sky full of rays: wedges from above the top edge, turning a step every quarter second */

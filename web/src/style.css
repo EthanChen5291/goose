@@ -434,6 +434,25 @@ kbd {
 .px-corner.lit .px-hint { color: #fff; }
 .px-corner .px-ver { color: #5d6485; }
 
+/* ── the title: labels riding the plates the movie draws ─────────────────── */
+.title-root .px-brand { pointer-events: none; }
+.plate-layer { pointer-events: none; }
+.plate-btn {
+  position: absolute; pointer-events: auto; border: 0; padding: 0 0 6px 9px; background: transparent; cursor: pointer;
+  display: flex; align-items: flex-end; justify-content: flex-start; box-sizing: border-box;
+  transition: opacity .15s ease;
+}
+.plate-btn .plbl {
+  font-family: 'Pixelify', 'PressStart', monospace; font-weight: 700; font-size: 16px; line-height: 14px;
+  color: #1b2033; letter-spacing: 0; white-space: nowrap; text-shadow: 1px 1px 0 rgba(255, 255, 255, .55);
+}
+.plate-btn.on .plbl, .plate-btn:hover .plbl, .plate-btn:focus-visible .plbl { color: #0b0d18; transform: translateY(-2px); }
+.plate-btn:focus-visible { outline: 0; }
+.plate-layer.pressing .plate-btn { opacity: 0; }
+/* the phone's flash */
+.px-flash { pointer-events: none; background: #fff; opacity: 0; }
+.px-flash.on { opacity: .92; }
+
 /* the kit's bars, in game pixels (the pause screen sizes the same bars by --k) */
 .pxstage .pbtn {
   width: 106px;
@@ -619,13 +638,14 @@ kbd {
 .map-back:hover, .map-add:hover { background: rgba(8, 10, 22, .85); }
 .map-add { color: #ffde7b; }
 .map-nodes { pointer-events: none; }
-/* a node: the number over its stone, the grade letter beside it */
+/* a node: a round hit area over its round stone, the number in it, the grade letter beside it */
 .map-node {
-  position: absolute; pointer-events: auto; width: 18px; height: 22px; border: 0; padding: 0;
+  position: absolute; pointer-events: auto; width: 22px; height: 22px; border: 0; padding: 0; border-radius: 50%;
   background: transparent; color: #fff; font-family: 'Silk', monospace; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
   transition: transform .15s ease;
 }
-.map-node b { display: block; font-size: 8px; line-height: 8px; font-weight: 700; color: #0b0d18; }
+.map-node b { display: block; font-size: 8px; line-height: 8px; font-weight: 700; color: #0b0d18; transform: translateY(-2px); }
 .map-node.done b { color: #0b0d18; }
 .map-node i { position: absolute; right: -7px; top: -6px; font-style: normal; font-size: 8px; color: #ffde7b; text-shadow: 1px 1px 0 #0b0d18; }
 .map-node.on { transform: translateY(-2px); }
@@ -649,3 +669,40 @@ kbd {
 .map-bar i { display: block; height: 100%; background: #ffde7b; width: 0; transition: width .3s ease; }
 .map-card-best { font-size: 8px; color: rgba(255, 255, 255, .7); }
 .map-play { align-self: flex-end; }
+
+/* ── the move gallery (/gallery): a bar over the pixel stage, and in the
+      one-move view a panel of controls down the left ─────────────────────── */
+.gallery { position: fixed; inset: 0; pointer-events: none; }
+.gallery-bar {
+  pointer-events: auto;
+  position: absolute; left: 0; right: 0; top: 0; height: 44px;
+  display: flex; align-items: center; gap: 8px; padding: 0 12px;
+  background: rgba(20, 18, 31, 0.92);
+  border-bottom: 1px solid var(--line);
+}
+.gallery-title { font-family: 'Fredoka', sans-serif; font-weight: 600; font-size: 15px; margin-left: 6px; }
+.gallery-hint { color: var(--dim); font-size: 12px; margin-right: auto; }
+.gallery-clock {
+  color: var(--gold); font-size: 12px; font-variant-numeric: tabular-nums;
+  margin-right: 10px; min-width: 190px; text-align: right;
+}
+.gallery-bar .chip { padding: 4px 12px; font-size: 13px; }
+.gallery-panel {
+  pointer-events: auto;
+  position: absolute; left: 0; top: 44px; bottom: 0; width: 250px;
+  padding: 10px 12px 18px;
+  background: rgba(20, 18, 31, 0.92);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  display: none; flex-direction: column; gap: 6px;
+}
+.gallery-solo .gallery-panel { display: flex; }
+.gallery-panel .label { margin-top: 8px; }
+.gallery-row { gap: 4px; }
+.gallery-row .chip { padding: 3px 8px; font-size: 12px; }
+.gallery-panel .shint { font-size: 12px; line-height: 1.5; margin-top: 10px; }
+.gallery-new {
+  display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 999px;
+  background: var(--gold); color: var(--ink); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  vertical-align: 1px;
+}

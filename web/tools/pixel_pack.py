@@ -115,6 +115,46 @@ FX = {
 }
 FX_FPS = 15
 
+# ── the hit-animation packs (Viktor Hahn, CC BY 4.0; assets/pixel/fx_hit) ────
+# Thin line-art arcs, sparks, rings and streaks: the trail a blow leaves and the
+# spark where it lands.  name → (file, frame w, frame h).  The sheets are grids;
+# they are re-laid as horizontal strips with the empty frames dropped, and each
+# also gets a half-size `_s` (box-filtered with the alpha thresholded so a 1 px
+# line survives) — the size that suits a hit on a 28 px goose.
+HIT_SRC = os.path.join(SRC, "fx_hit")
+HIT_FX = {
+    # the trail of a swing
+    "swoosh": ("hit10.png", 64, 64),          # a wing's swipe
+    "arc_down": ("swing01.png", 64, 64),      # a crescent chopping down and forward
+    "arc_down_thin": ("swing02.png", 64, 64),
+    "arc_c": ("swing03.png", 64, 64),         # a forward horizontal swipe, held then crumbling
+    "arc_rise": ("hit04.png", 64, 64),        # a quarter arc (native: backward and down)
+    "arc_rise_streak": ("hit05.png", 64, 64),
+    "thrust": ("hit01.png", 64, 64),          # a diagonal stab line
+    # where the blow lands
+    "cross": ("hit02.png", 64, 64),
+    "star": ("hit03.png", 64, 64),
+    "spray": ("splash01.png", 64, 64),        # debris fanning forward
+    "spray_b": ("splash02.png", 64, 64),
+    "spike_burst": ("splash04.png", 64, 64),  # a big spiky impact
+    "shards": ("shards01.png", 64, 64),
+    "shards_b": ("shards02.png", 64, 64),
+    "shatter": ("break01.png", 64, 64),       # four chunks flying apart
+    "shatter_b": ("break02.png", 64, 64),
+    "hit_red": ("hit11.png", 64, 64),
+    # the ground and the air
+    "ground_ring": ("impact01.png", 64, 64),  # a shockwave ellipse on the ground
+    "ground_ring_b": ("impact02.png", 64, 64),
+    "ring": ("circle02.png", 64, 64),         # an expanding circle
+    "ring_tiny": ("circle01.png", 16, 16),
+    "streak": ("blast01.png", 128, 32),       # a smoke streak (a dash, or a pillar when stood up)
+    "streak_orange": ("blast01_orange.png", 128, 32),
+    "streak_green": ("blast01_green.png", 128, 32),
+    "comet": ("blast02.png", 128, 32),        # a projectile with a tail
+    "comet_orange": ("blast02_orange.png", 128, 32),
+    "balls": ("balls.png", 64, 64),
+}
+
 # ── fonts ───────────────────────────────────────────────────────────────────
 # name → (file, px).  Press Start 2P is an 8 px grid font: crisp at 8 and 16.
 # Pixelify Sans is the friendlier face, on-grid at multiples of 16.
@@ -254,6 +294,51 @@ def pack_fx_offline() -> dict:
         out[name] = {"url": f"px/fx/{name}.png", "fw": m["fw"], "fh": m["fh"],
                      "n": im.width // m["fw"], "fps": FX_FPS}
     print(f"fx (offline): {len(out)} strips")
+    return out
+
+
+def shrink_half(strip: Image.Image) -> Image.Image:
+    """Half size, for line art: box-filter, then keep any pixel whose box was at
+    least a quarter covered (so a 1 px line stays a 1 px line), fully opaque,
+    with the colour of the covered part."""
+    a = np.array(strip).astype(np.float64)
+    h, w = a.shape[0] // 2, a.shape[1] // 2
+    b = a[:h * 2, :w * 2].reshape(h, 2, w, 2, 4)
+    alpha = b[..., 3]
+    cov = alpha.sum(axis=(1, 3)) / 4.0                      # 0..255 mean alpha of the box
+    rgb = (b[..., :3] * alpha[..., None]).sum(axis=(1, 3)) / np.maximum(alpha.sum(axis=(1, 3)), 1)[..., None]
+    out = np.zeros((h, w, 4), dtype=np.uint8)
+    keep = cov >= 56
+    out[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+    out[..., 3] = np.where(keep, 255, 0).astype(np.uint8)
+    out[~keep, :3] = 0
+    return Image.fromarray(out)
+
+
+def pack_fx_hit() -> dict:
+    """The hit packs: each sheet re-laid as one horizontal strip, plus its `_s` half."""
+    out = {}
+    os.makedirs(os.path.join(OUT, "fx"), exist_ok=True)
+    if not os.path.isdir(HIT_SRC):
+        print("missing", HIT_SRC)
+        return out
+    for name, (fn, fw, fh) in HIT_FX.items():
+        im = load(os.path.join(HIT_SRC, fn))
+        frames = []
+        for r in range(im.height // fh):
+            for c in range(im.width // fw):
+                f = im.crop((c * fw, r * fh, (c + 1) * fw, (r + 1) * fh))
+                if np.array(f)[:, :, 3].max() > 0:
+                    frames.append(f)
+        strip = Image.new("RGBA", (fw * len(frames), fh))
+        for i, f in enumerate(frames):
+            strip.paste(f, (i * fw, 0))
+        strip.save(os.path.join(OUT, "fx", f"{name}.png"))
+        out[name] = {"url": f"px/fx/{name}.png", "fw": fw, "fh": fh, "n": len(frames), "fps": FX_FPS}
+        small = shrink_half(strip)
+        small.save(os.path.join(OUT, "fx", f"{name}_s.png"))
+        out[name + "_s"] = {"url": f"px/fx/{name}_s.png", "fw": fw // 2, "fh": fh // 2, "n": len(frames), "fps": FX_FPS}
+    print(f"fx (hit packs): {len(out)} strips")
     return out
 
 
@@ -451,7 +536,7 @@ def pack_ui() -> dict:
     KANJI = {
         "fist": "拳", "rock": "岩", "kick": "蹴", "roar": "轟", "strike": "撃", "swift": "疾",
         "soar": "翔", "crush": "潰", "slash": "斬", "power": "力", "wolf": "狼", "fang": "牙",
-        "do": "ド", "go": "ゴ", "win": "勝", "fight": "闘",
+        "do": "ド", "go": "ゴ", "win": "勝", "fight": "闘", "roll": "転", "lash": "打",
     }
     import glob as _glob
     faces = _glob.glob("/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc") + _glob.glob("/System/Library/Fonts/Hiragino Sans GB.ttc")
@@ -645,23 +730,56 @@ def compose_scene(name: str, mood: str, layout: str) -> dict:
     return meta
 
 
-SCENES = [
-    ("meadow", "noon", "flat"),
-    ("pillars_dusk", "dusk", "pillars"),
-    ("ruins_night", "night", "ruins"),
-    ("steps_dawn", "dawn", "steps"),
-    ("storm_flat", "storm", "flat"),
-    ("pillars_night", "night", "pillars"),
-    ("ruins_dusk", "dusk", "ruins"),
-    ("steps_noon", "noon", "steps"),
+# ── the skies ───────────────────────────────────────────────────────────────
+# The fight happens above the clouds now: each scene is one Craftpix sky set
+# (assets/pixel/sky/<id>/1.png … n.png, 576×324, farthest first), shipped as
+# it is, its layers apart so the client can drift them at different speeds.
+# The ground is not in the art: the client draws a floating platform at
+# `groundY` for the fighters to stand on.  `mood` is the word the level card
+# shows.
+SKY_H = 324
+SKY_GROUND = 262
+SKIES = [
+    ("day_blue", "clear"), ("sunset_pink", "sunset"), ("night_moon", "night"), ("violet", "violet"),
+    ("ember", "ember"), ("storm_lightning", "storm"), ("mint", "mint"), ("gold_dusk", "gold"),
+    ("dusk_purple", "dusk"), ("day_clear", "noon"), ("storm_grey", "overcast"), ("overcast", "grey"),
+    ("sea_sky", "sea"), ("night_full", "midnight"),
 ]
+
+
+def compose_sky(name: str, mood: str) -> dict | None:
+    src = os.path.join(SRC, "sky", name)
+    files = sorted(f for f in os.listdir(src) if f[0].isdigit() and f.endswith(".png"))
+    if not files:
+        return None
+    os.makedirs(os.path.join(OUT, "scenes"), exist_ok=True)
+    meta = {"id": name, "mood": mood, "layout": "sky", "w": 576, "h": SKY_H, "groundY": SKY_GROUND, "layers": []}
+    n = len(files)
+    prev = Image.new("RGBA", (576, SKY_H), (0, 0, 0, 255))
+    for i, fn in enumerate(files):
+        im = load(os.path.join(src, fn))
+        if im.size != (576, SKY_H):
+            im = im.resize((576, SKY_H), Image.NEAREST)
+        out = f"{name}_{i}.png"
+        im.save(os.path.join(OUT, "scenes", out))
+        # the sky itself stands still; the nearest clouds move most
+        depth = 0.0 if i == 0 else round(0.12 + 0.78 * (i - 1) / max(1, n - 2), 3) if n > 2 else 0.6
+        meta["layers"].append({"name": f"layer{i}", "url": f"px/scenes/{out}", "depth": depth})
+        prev.alpha_composite(im)
+    prev.crop((0, SKY_H - 216, 384, SKY_H)).save(os.path.join(OUT, "scenes", f"{name}_preview.png"))
+    meta["preview"] = f"px/scenes/{name}_preview.png"
+    return meta
 
 
 def pack_scenes() -> list:
     out = []
-    for name, mood, layout in SCENES:
-        out.append(compose_scene(name, mood, layout))
-        print(f"scene {name}: {mood} / {layout}")
+    for name, mood in SKIES:
+        meta = compose_sky(name, mood)
+        if meta:
+            out.append(meta)
+            print(f"sky {name}: {len(meta['layers'])} layers")
+        else:
+            print(f"sky {name}: missing")
     return out
 
 
@@ -670,7 +788,7 @@ def main() -> None:
     os.makedirs(OUT, exist_ok=True)
     manifest = {
         "chars": pack_chars(),
-        "fx": pack_fx() if os.path.isdir(FX_SRC) else pack_fx_offline(),
+        "fx": {**(pack_fx() if os.path.isdir(FX_SRC) else pack_fx_offline()), **pack_fx_hit()},
         "fonts": pack_fonts(),
         "ui": pack_ui(),
         "scenes": pack_scenes(),

@@ -10,8 +10,10 @@
  * the difficulty, the mode, your best, and Play.
  *
  * Everything moves smoothly and quietly: the camera flies up into place,
- * the chrome fades in, the card scales in.  Leaving for a level the chrome
- * fades as the camera slams down onto the goose (`flyOut`).
+ * the chrome fades in, the card scales in.  The goose, though, arrives the way
+ * it left the title — thrown in from off-screen, tumbling, rolling to a stop,
+ * then running to its stone (`movie.map(..., arrive)`).  Leaving for a level
+ * the chrome fades (`flyOut`) while the movie plays the abduction.
  */
 import { pixelStage, loadManifest } from './pxchrome'
 import type { PxStage } from './pxchrome'
@@ -46,6 +48,8 @@ export interface SelectOptions {
   onBack: () => void
   sfx: (name: string) => void
   movie: Promise<GooseMovie>
+  /** the goose is thrown onto the map when the screen opens */
+  arrive?: boolean
 }
 
 export interface SelectScreen {
@@ -140,6 +144,7 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
 
   // ── the nodes on the map ───────────────────────────────────────────────
   let movie: GooseMovie | null = null
+  let arriveNext = opts.arrive ?? false
   const nodeEls: HTMLButtonElement[] = []
   const paintNodes = (): void => {
     nodesEl.replaceChildren()
@@ -160,8 +165,9 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
     world.textContent = WORLD_NAMES[page % WORLD_NAMES.length]
     dots.replaceChildren()
     for (let i = 0; i < pages; i++) { const d = document.createElement('span'); d.className = i === page ? 'on' : ''; dots.appendChild(d) }
-    movie?.map(ps.length, selIdx - page * PER_WORLD, ps.map(cleared))
+    movie?.map(ps.length, selIdx - page * PER_WORLD, ps.map(cleared), arriveNext)
     movie?.setWorld(page)
+    arriveNext = false
   }
   const select = (gi: number): void => {
     if (gi < 0 || gi >= songs.length) return
@@ -207,8 +213,8 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
     if (!movie) return
     nodeEls.forEach((b, i) => {
       const [x, y] = movie!.project(i)
-      b.style.left = `${x - 9}px`
-      b.style.top = `${y - 4}px`
+      b.style.left = `${x - 11}px`
+      b.style.top = `${y - 11}px`
     })
   }
   raf = requestAnimationFrame(tick)
@@ -259,8 +265,8 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
     stop: () => { alive = false; for (const s of stops) s() },
     flyOut: () => new Promise<void>((resolve) => {
       flying = true
+      closeCard()
       px.root.classList.add('flying')
-      opts.sfx('crash_zoom')
       window.setTimeout(resolve, 500)
     }),
   }

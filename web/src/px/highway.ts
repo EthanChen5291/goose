@@ -43,7 +43,8 @@ import { PixelScene } from './scene'
 import type { SceneShift } from './scene'
 import { FxLayer } from './fx'
 import { Goose, Enemy, Fight, planHeavy } from './actors'
-import { gooseEffects, SELF_VOICED, KANJI_OF } from './combat'
+import { Combat } from './combat'
+import { KanjiLayer } from './kanji'
 import { pxText } from './text'
 import type { LevelSpec } from './levels'
 
@@ -69,8 +70,6 @@ const CHORD_S = 0.06
 const HP_W = 30
 
 interface Stamp { text: string; color: number; x: number; y: number; t0: number }
-/** a kanji stamped behind a blow: pops in, holds, blinks out */
-interface Kanji { name: string; color: number; x: number; y: number; t0: number; big: boolean }
 /** a big word across the highway: FIGHT!, DROP!, DOWN! */
 interface BigWord { text: string; color: number; t0: number; dur: number }
 /** what the big drops do to the world, in turn */
@@ -121,7 +120,8 @@ export class PixelHighway implements PlayRenderer {
   private fx: FxLayer
   private ringGfx = new Container()
   private stampLayer = new Container()
-  private kanjiLayer = new Container()
+  private kanji: KanjiLayer
+  private combat: Combat
   private bigLayer = new Container()
   private winGfx = new Graphics()
   private wordLayer = new Container()
@@ -149,8 +149,6 @@ export class PixelHighway implements PlayRenderer {
   /** set at the end: the enemy went down */
   won = false
   private endT = -9
-  private kanjis: Kanji[] = []
-  private kanjiSprites: [Sprite, Sprite][] = []
   private bigWords: BigWord[] = []
   private bigText: BitmapText
   private bigShadow: BitmapText
@@ -251,13 +249,14 @@ export class PixelHighway implements PlayRenderer {
     this.enemySpec = level.enemy
     this.fight = new Fight(goose, enemy)
     this.fx = new FxLayer(assets)
-    goose.onEvent = gooseEffects(this.fight, this.fx, (n, d) => this.sfx(n, d), (px) => { this.kickPx = px; this.kickT = -1 },
-                                 (x, y, t, r0, r1, dur) => this.rings.push({ x, y, t0: t, color: WHITE, r0, r1, dur }),
-                                 (text, x, y, t) => this.stamps.push({ text, color: KB.GOLD, x, y, t0: t }),
-                                 {
-                                   kanji: (name, color, x, y, t, big) => this.kanjis.push({ name, color, x, y, t0: t, big }),
-                                   invert: (t, secs) => { this.invertUntil = t + secs },
-                                 })
+    this.kanji = new KanjiLayer(assets)
+    this.combat = new Combat(this.fight, this.fx, (n, d) => this.sfx(n, d), {
+      kick: (px) => { this.kickPx = px; this.kickT = -1 },
+      mark: (text, x, y, t) => this.stamps.push({ text, color: KB.GOLD, x, y, t0: t }),
+      kanji: (name, color, x, y, t, big) => this.kanji.push(name, color, x, y, t, big),
+      invert: (t, secs) => { this.invertUntil = t + secs },
+    })
+    goose.onEvent = this.combat.onEvent
     this.invertFilter.negative(false)
     this.bigText = pxText('px16')
     this.bigShadow = pxText('px16', '', INK)
@@ -282,7 +281,7 @@ export class PixelHighway implements PlayRenderer {
     this.stage.addChild(this.scene.container, this.rowGfx, this.duetGfx, this.anchorGfx,
                         ...this.anchorKeys, ...this.anchorLabels,
                         this.connGfx, this.groundGfx, this.ringLayer, this.noteLayer,
-                        this.kanjiLayer, this.fight.container, this.fx.container, this.ringGfx, this.stampLayer,
+                        this.kanji.container, this.fight.container, this.fx.container, this.ringGfx, this.stampLayer,
                         this.winGfx, this.wordLayer, this.bigLayer, this.hudLayer)
     this.bigLayer.addChild(this.bigShadow, this.bigText)
     this.wordLayer.addChild(this.wordCaret, this.queueText)
@@ -493,37 +492,18 @@ export class PixelHighway implements PlayRenderer {
     this.stamp(judgment, x, y, offsetMs, t)
 
     // the fight
-    const { goose, enemy } = this.fight
+    const { goose } = this.fight
     const w = this.geom.get(ev._uid)?.w ?? 2
     const gap = (this.nextT.get(ev._uid) ?? ev.timestamp + 1) - ev.timestamp
+    // the enemy's blow was on its way: landing this note reads it — the goose dodges instead of getting hurt
+    if (this.pendingHurt >= 0 && t < this.pendingHurt) { this.pendingHurt = -1; goose.dodge(t) }
     let mv = ''
     if (t - this.lastHitT < CHORD_S) { goose.chord(t); mv = 'spin' }
     else mv = goose.hit(t, w, judgment, gap)
     this.lastHitT = t
-    const heavy = SELF_VOICED.has(mv)
-    if (heavy) { /* its own events made its sound */ }
-    else if (mv === 'peck') this.sfx('peck')
-    else if (mv === 'slide') this.sfx('slide')
-    else if (mv === 'hop_slap') { this.sfx('jump'); this.sfx('slap', 0.05) }
-    else if (mv === 'whip') this.sfx('whip')
-    else if (mv === 'flurry') this.sfx('slap2')
-    else this.sfx(this.rng() < 0.5 ? 'slap' : 'slap2')
-    const strong = heavy || w >= 3 || (judgment === 'perfect' && this.rng() < 0.25)
-    if (strong && !heavy) this.sfx('enemy_hit', 0.03)
+    // the blow: its sound, the enemy's reaction, the trail off the wing and the spark where it lands
+    this.combat.blow(mv, judgment, w, t)
     if (judgment === 'perfect' && w >= 3) this.sfx('perfect', 0.04)
-    // the uppercut launches and the boulder breaks on their own; everything else is a plain hit
-    if (mv !== 'uppercut' && mv !== 'boulder') enemy.hit(t, strong, mv === 'bellyflop' || mv === 'dropkick' ? 5 : 2)
-    const ex = enemy.x, ey = enemy.y - 22
-    if (heavy) { /* the event drew it */ }
-    else if (strong) this.fx.spawn('slash_s', ex + 4, ey, t, { flipX: true })
-    // a strong reactive blow sometimes stamps its kanji, small, behind the enemy
-    if (!heavy && strong && KANJI_OF[mv] && this.rng() < 0.45) {
-      const [k, kc] = KANJI_OF[mv]
-      this.kanjis.push({ name: k, color: kc, x: ex - 6, y: ey - 10, t0: t, big: false })
-    }
-    else if (judgment === 'perfect') this.fx.spawn('impact_yellow_s', ex + 3, ey, t, { flipX: true })
-    else if (judgment === 'good') this.fx.spawn('impact_blue_s', ex + 3, ey, t, { flipX: true })
-    else this.fx.spawn('muzzle', ex + 2, ey, t)
     // the circle answers with a small flash
     this.fx.spawn('muzzle', x, y, t, { fps: 24 })
     this.rings.push({ x, y, t0: t, color: col, r0: 10, r1: 14, dur: 0.14 })
@@ -566,7 +546,7 @@ export class PixelHighway implements PlayRenderer {
     this.stamp(judgment, x, y, 0, t)
     this.fx.spawn('sparkle_blue_s', x, y - 6, t)
     this.fight.goose.holdEnd(t, judgment !== 'miss')
-    this.fight.enemy.hit(t, true)
+    if (judgment === 'miss') this.fight.enemy.hit(t, false)
     this.hitsLanded += 1
   }
 
@@ -662,10 +642,11 @@ export class PixelHighway implements PlayRenderer {
   private stamp(kind: string, _x: number, _y: number, offsetMs: number, t: number): void {
     let text = STAMP_TEXT[kind] ?? kind.toUpperCase()
     if (kind !== 'miss' && Math.abs(offsetMs) > 1) text = `${text} ${offsetMs > 0 ? '+' : ''}${offsetMs.toFixed(0)}`
-    // over the goose's head, so the lanes stay clear for the notes behind
-    const g = this.fight.goose
-    this.stamps.push({ text, color: STAMP_COLORS[kind] ?? WHITE, x: g.x, y: g.y - 20, t0: t })
-    if (this.stamps.length > 6) this.stamps.shift()
+    // in the sky over the fight — above the highest a move reaches (the body slam's hang), so the
+    // word never sits on the fighters, and off the lanes so the notes behind stay clear
+    const { goose, enemy } = this.fight
+    this.stamps.push({ text, color: STAMP_COLORS[kind] ?? WHITE, x: Math.round((goose.x + enemy.x) / 2), y: goose.y - 84, t0: t })
+    if (this.stamps.length > 4) this.stamps.shift()
   }
 
   // ── the frame ────────────────────────────────────────────────────────────
@@ -743,7 +724,7 @@ export class PixelHighway implements PlayRenderer {
     this.drawFight(t, beatI, beatP)
     this.fx.update(t)
     this.drawRingsFx(t)
-    this.drawKanji(t)
+    this.kanji.draw(t, this.scene.whiteOut(t))
     this.drawStamps(t)
     this.drawBig(t)
     this.drawWin(t)
@@ -823,10 +804,32 @@ export class PixelHighway implements PlayRenderer {
       const kind = SHIFT_CYCLE[this.shiftI % SHIFT_CYCLE.length]
       this.shiftI += 1
       if (kind === 'white') { this.scene.shift('white', t, this.beatDur * 2); this.invertUntil = t + 0.07 }
-      else this.scene.shift(kind, t, this.barDur * (kind === 'rays' ? 2 : 4))
+      else this.scene.shift(kind, t, this.sectionLeft(t))
     } else if (this.rng() < 0.35) {
-      this.scene.shift('gold', t, this.barDur)
+      this.scene.shift('gold', t, Math.min(this.sectionLeft(t), this.barDur * 4))
     }
+  }
+
+  /**
+   * How long the music stays in the section it is in at `t`: to the end of
+   * the phrase the chart knows about, or to where the bar vibes change — never
+   * less than four bars, never more than sixteen.  A drop's colour stays on
+   * that long, so the world does not flicker between looks mid-chorus.
+   */
+  private sectionLeft(t: number): number {
+    let end = -1
+    const ph = this.phraseAt(t)
+    if (ph) end = ph.t1
+    const bi = this.barT.findIndex((b, i) => b <= t && (i + 1 >= this.barT.length || this.barT[i + 1] > t))
+    if (bi >= 0) {
+      const v = this.barVibes[bi]
+      let e = bi + 1
+      while (e < this.barVibes.length && this.barVibes[e] === v) e += 1
+      const vibeEnd = e < this.barT.length ? this.barT[e] : this.barT[this.barT.length - 1] + this.barDur
+      end = end < 0 ? vibeEnd : Math.max(end, vibeEnd)
+    }
+    const left = end > t ? end - t : this.barDur * 8
+    return Math.max(this.barDur * 4, Math.min(this.barDur * 16, left))
   }
 
   /** a big word across the highway, in the combo's face */
@@ -847,38 +850,6 @@ export class PixelHighway implements PlayRenderer {
     const x = this.L.hwCx, y = Math.round(this.L.h * 0.28) + pop
     this.bigText.x = x; this.bigText.y = y
     this.bigShadow.x = x + 2; this.bigShadow.y = y + 2
-  }
-
-  /** the kanji stamps: the 48 px face with a dark shadow, one pixel up for two frames, then a blink out */
-  private drawKanji(t: number): void {
-    for (const [a, b] of this.kanjiSprites) { a.visible = false; b.visible = false }
-    let i = 0
-    const white = this.scene.whiteOut(t)
-    this.kanjis = this.kanjis.filter((k) => {
-      const age = t - k.t0
-      const dur = k.big ? 0.55 : 0.4
-      if (age > dur) return false
-      let pair = this.kanjiSprites[i]
-      if (!pair) {
-        const sh = new Sprite(); sh.anchor.set(0.5); sh.roundPixels = true; sh.tint = INK
-        const sp = new Sprite(); sp.anchor.set(0.5); sp.roundPixels = true
-        this.kanjiLayer.addChild(sh, sp)
-        pair = [sh, sp]
-        this.kanjiSprites.push(pair)
-      }
-      i += 1
-      const [sh, sp] = pair
-      const tex = this.assets.ui(`${k.big ? 'k48' : 'k24'}_${k.name}`)
-      sh.texture = sp.texture = tex
-      const blink = age > dur * 0.7 && Math.floor(age * 24) % 2 === 1
-      sh.visible = sp.visible = !blink
-      sp.tint = white ? INK : k.color
-      const pop = age < 0.05 ? -1 : 0
-      sp.x = k.x; sp.y = k.y + pop
-      sh.x = k.x + 2; sh.y = k.y + 2 + pop
-      sh.visible = sh.visible && !white
-      return true
-    })
   }
 
   /** the enemy is sent flying: white speed lines from where it stood */

@@ -3,6 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- every asset is fetched by a path relative to the app root, and the app is
+         served at routes below it (/gallery), so fix the base here -->
+    <base href="/" />
     <title>goose</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>

@@ -1,10 +1,12 @@
 /**
- * The victory show-off: the muscled goose in three cut-ins, and a line.
+ * The victory: the stance, and a line.
  *
- * After the DOWN! the 3D goose stands in the meadow at dusk and the camera
- * cuts the way the reference does — boots, low; the bicep, close; the face,
- * profile — each shot pushing in a little, with speed lines on the first two.
- * Over the last one a dialogue box types a line, one letter a tick.
+ * After the DOWN! the 3D goose stands in the meadow at dusk, grows the hero's
+ * body in three snaps and strikes a JoJo pose, and the camera cuts the way
+ * the manga frames it — from the ground looking up, from high behind looking
+ * down the pose, then the face, scowling, with ド ド ド in the air — each
+ * shot pushing in a little, speed lines on the first two.  Over the last one
+ * a dialogue box types a line, one letter a tick.
  */
 import { pixelStage } from './pxchrome'
 import type { GooseMovie } from './goose3d'
@@ -56,7 +58,7 @@ export function buildWinShow(movie: GooseMovie, songId: string, sfx: (n: string)
         }, 60 + k * 45))
       })
     }
-  })
+  }, h)
   return {
     el: px.root,
     done,

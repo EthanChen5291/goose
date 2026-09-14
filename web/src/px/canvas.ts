@@ -42,14 +42,16 @@ export class PixelCanvas {
   /**
    * Fit the buffer to a window.  `cssW/cssH` are CSS pixels, `dpr` the device
    * ratio — the scale is chosen in *device* pixels so a Retina display gets
-   * twice the integer steps.  Returns true when the buffer size changed.
+   * twice the integer steps.  `zoom` > 1 makes everything bigger by aiming for a
+   * smaller buffer.  Returns true when the buffer size changed.
    */
-  resize(cssW: number, cssH: number, dpr: number): boolean {
+  resize(cssW: number, cssH: number, dpr: number, zoom = 1): boolean {
     this.dpr = dpr
     const devW = Math.round(cssW * dpr)
     const devH = Math.round(cssH * dpr)
-    let scale = Math.max(1, Math.round(Math.min(devW / TARGET_W, devH / TARGET_H)))
-    while (scale > 1 && (devW / scale < MIN_W || devH / scale < MIN_H)) scale -= 1
+    // `zoom` asks for fewer game pixels on screen (the gallery's close-up): the target buffer shrinks by it
+    let scale = Math.max(1, Math.round(Math.min(devW / (TARGET_W / zoom), devH / (TARGET_H / zoom))))
+    while (scale > 1 && (devW / scale < MIN_W / zoom || devH / scale < MIN_H / zoom)) scale -= 1
     const w = Math.ceil(devW / scale)
     const h = Math.ceil(devH / scale)
     const changed = w !== this.w || h !== this.h || scale !== this.scale

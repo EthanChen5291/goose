@@ -22,14 +22,20 @@ export const ENEMIES: Record<string, EnemySpec> = {
 export interface LevelSpec { enemy: EnemySpec; scene: string }
 
 const ROTATION: [string, string][] = [
-  ['skeleton_white', 'meadow'],
-  ['ninja', 'pillars_dusk'],
-  ['skeleton_yellow', 'ruins_night'],
-  ['skeleton_white', 'steps_dawn'],
-  ['ninja', 'storm_flat'],
-  ['skeleton_yellow', 'pillars_night'],
-  ['skeleton_white', 'ruins_dusk'],
-  ['ninja', 'steps_noon'],
+  ['skeleton_white', 'day_blue'],
+  ['ninja', 'sunset_pink'],
+  ['skeleton_yellow', 'night_moon'],
+  ['skeleton_white', 'violet'],
+  ['ninja', 'storm_lightning'],
+  ['skeleton_yellow', 'ember'],
+  ['skeleton_white', 'mint'],
+  ['ninja', 'gold_dusk'],
+  ['skeleton_yellow', 'dusk_purple'],
+  ['skeleton_white', 'day_clear'],
+  ['ninja', 'storm_grey'],
+  ['skeleton_yellow', 'sea_sky'],
+  ['skeleton_white', 'night_full'],
+  ['ninja', 'overcast'],
 ]
 
 function hash(s: string): number {
