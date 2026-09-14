@@ -78,6 +78,20 @@ export class Playfield {
     return 'lanes'
   }
 
+  /**
+   * The next time the circles will rearrange after `t`, and into what — so the
+   * screen can say so a bar ahead instead of springing it.
+   */
+  nextChange(t: number): { at: number; mode: FieldMode } | null {
+    const bounds = [...new Set(this.stages.flatMap(([a, b]) => [a, b]))].sort((x, y) => x - y)
+    for (const b of bounds) {
+      if (b <= t) continue
+      const m = this.modeAt(b)
+      if (m !== this.modeAt(b - 1e-3)) return { at: b, mode: m }
+    }
+    return null
+  }
+
   /** Call once a frame; starts a swap when the chart's mode changes. */
   update(t: number): void {
     const want = this.modeAt(t)

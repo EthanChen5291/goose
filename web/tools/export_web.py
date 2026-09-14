@@ -75,16 +75,13 @@ def transcode(src: str, dst: str) -> bool:
     return True
 
 
-# Animation strips the client needs.  `noki_bop` is the title screen's dancer and
-# the play screen's Noki; `noki_base_loop` is the one that sits beside the song
-# list; `left`/`right` are its eye-tracking turns.
-SHEETS = [("noki_bop", 420), ("noki_hurt", 420), ("noki_base_loop", 520),
-          ("left", 520), ("right", 520)]
+# Animation strips from assets/animations the client still uses.  The cat is
+# gone: the goose, the enemies, the scenes and the effects are pixel art built
+# by tools/pixel_pack.py into public/px/, not strips from here.
+SHEETS: list[tuple[str, int]] = []
 
-# Flat images the menus draw: the wordmark, the settings gear, the play triangle.
-IMAGES = ["noki_maintitle.png", "noki_settingsmain.png", "playbutton.png",
-          "noki_settingsbutton.png", "exitbutton.png", "leavebutton.png",
-          "spotlight.png"]
+# Flat images the menus draw.  None now — the menus are the pixel kit.
+IMAGES: list[str] = []
 
 
 def pack_sheet(name: str, height: int) -> dict | None:
@@ -194,19 +191,33 @@ def main() -> None:
         if os.path.exists(src):
             shutil.copyfile(src, os.path.join(FONTS_OUT, dst_name))
 
+    # What the last run wrote.  `--charts-only` skips the art, and writing the
+    # index from an empty dict would drop every sheet and image out of it — the
+    # files stay on disk, the client stops being told they exist, and the menus
+    # quietly lose their animations while the hardcoded images keep working.
+    prev = {}
+    index_out = os.path.join(PUB, "index.json")
+    if os.path.exists(index_out):
+        try:
+            prev = json.load(open(index_out, encoding="utf-8"))
+        except Exception:
+            prev = {}
+
     # flat menu art, copied as-is
     img_out = os.path.join(PUB, "img")
     os.makedirs(img_out, exist_ok=True)
-    images = []
+    images = list(prev.get("images", []))
     if not args.charts_only:
+        images = []
         for fn in IMAGES:
             src_img = os.path.join(ROOT, "assets", "images", fn)
             if os.path.exists(src_img):
                 shutil.copyfile(src_img, os.path.join(img_out, fn))
                 images.append(fn)
 
-    sheets = {}
+    sheets = dict(prev.get("sheets", {}))
     if not args.charts_only:
+        sheets = {}
         import pygame
         pygame.init()
         pygame.display.set_mode((1, 1))
@@ -219,6 +230,12 @@ def main() -> None:
     with open(os.path.join(PUB, "index.json"), "w", encoding="utf-8") as f:
         json.dump({"generator": index_src.get("generator"), "songs": songs,
                    "sheets": sheets, "images": images}, f, indent=1)
+    # a sheet on disk that the index does not mention is a menu with no animation
+    missing = [f2[:-4] for f2 in sorted(os.listdir(img_out))
+               if f2.endswith(".png") and f2[:-4] in dict(SHEETS) and f2[:-4] not in sheets]
+    if missing:
+        print(f"WARNING: {', '.join(missing)} are on disk but not in the index — "
+              f"the menus will show no animation.  Re-run without --charts-only.")
 
     audio_mb = sum(os.path.getsize(os.path.join(AUDIO_OUT, f))
                    for f in os.listdir(AUDIO_OUT) if f.endswith(".mp3")) / 1e6

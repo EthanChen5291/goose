@@ -6,7 +6,7 @@
  * method sets.  Naming the contract instead means the compiler catches a renderer
  * that forgets one, and the session stops asking questions at runtime.
  */
-import type { Container, Texture } from 'pixi.js'
+import type { Container } from 'pixi.js'
 import type { Layout } from '../core/layout'
 import type { ChartMeta } from '../core/models'
 import type { LiveEvent } from '../core/rhythm'
@@ -19,7 +19,6 @@ export interface PlayRenderer {
   setSections(meta: ChartMeta): void
   setDuets(spans: ChartMeta['duets']): void
   setLayout(layout: Layout): void
-  setNokiSheet(base: Texture, info: { frames: number; w: number; h: number }): void
 
   onHit(ev: LiveEvent, judgment: string, offsetMs: number, t: number): void
   onMiss(ev: LiveEvent, t: number): void
@@ -31,6 +30,13 @@ export interface PlayRenderer {
   onAnchorStart(ev: LiveEvent, judgment: string, offsetMs: number, t: number): void
   onAnchorComplete(ev: LiveEvent, judgment: string, t: number): void
   onAnchorBreak(ev: LiveEvent, t: number): void
+
+  /**
+   * A key the player pressed, or the letter it stands for right now — the
+   * onecircle stage is played on the arrow keys, which stand for d f j k.
+   * Returns null when the key means nothing special.
+   */
+  keyAlias?(key: string, t: number): string | null
 
   tryRush(t: number): boolean
   rushActive(t: number): boolean

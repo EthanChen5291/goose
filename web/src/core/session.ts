@@ -156,15 +156,20 @@ export class PlaySession {
     if (e.repeat) return
     if (e.key === 'Escape') { this.togglePause(); return }
     if (e.key === ' ') { e.preventDefault(); this.renderer.tryRush(this.clock.now()); return }
-    if (e.key.length !== 1) return
-    this.held.add(e.key.toLowerCase())
-    this.queue.push({ key: e.key, t: this.clock.atEvent(e.timeStamp), down: true })
+    const t = this.clock.atEvent(e.timeStamp)
+    const key = this.renderer.keyAlias?.(e.key, t) ?? e.key
+    if (key !== e.key) e.preventDefault()
+    if (key.length !== 1) return
+    this.held.add(key.toLowerCase())
+    this.queue.push({ key, t, down: true })
   }
 
   private onKeyUp = (e: KeyboardEvent): void => {
-    if (e.key.length !== 1) return
-    if (!this.held.delete(e.key.toLowerCase())) return
-    this.queue.push({ key: e.key, t: this.clock.atEvent(e.timeStamp), down: false })
+    const t = this.clock.atEvent(e.timeStamp)
+    const key = this.renderer.keyAlias?.(e.key, t) ?? e.key
+    if (key.length !== 1) return
+    if (!this.held.delete(key.toLowerCase())) return
+    this.queue.push({ key, t, down: false })
   }
 
   private onResize = (): void => {

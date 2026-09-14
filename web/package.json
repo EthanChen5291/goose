@@ -1,5 +1,5 @@
 {
-  "name": "noki-web",
+  "name": "goose-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -11,7 +11,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "pixi.js": "^8.6.6"
+    "@types/three": "^0.186.0",
+    "pixi.js": "^8.6.6",
+    "three": "^0.186.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",

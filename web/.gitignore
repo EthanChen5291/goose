@@ -8,3 +8,5 @@ public/charts/
 public/img/
 public/fonts/
 public/index.json
+# Built by tools/pixel_pack.py and tools/sfx_gen.py from assets/pixel — regenerate, don't commit.
+public/px/

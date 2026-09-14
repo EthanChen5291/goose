@@ -42,11 +42,6 @@ const ROWS: Row[] = [
     hint: 'The keyboard guide moves the slot line up to make room.',
   },
   {
-    kind: 'choice', key: 'noki_placement', label: 'Noki',
-    options: ['line', 'corner', 'hidden'],
-    names: { line: 'On the line', corner: 'Corner', hidden: 'Hidden' },
-  },
-  {
     kind: 'range', key: 'offset_ms', label: 'Timing', min: -150, max: 150, step: 5,
     format: (v) => `${v > 0 ? '+' : ''}${Math.trunc(v)} ms`,
     hint: 'Positive means the game waits longer for your press.',

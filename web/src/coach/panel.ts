@@ -2,7 +2,7 @@
  * The results-screen "Typing" view (Tab).  A port of game/coach/panel.py.
  *
  * One picture, three sentences, one thing to try: the keyboard heatmap tinted by
- * accuracy, Noki with a speech bubble, and the instruction line.  Reads the
+ * accuracy, the goose with a speech bubble, and the instruction line.  Reads the
  * folded stats and the tip library; writes the run into local history so next
  * time the praise and the cooldowns are honest.
  *
