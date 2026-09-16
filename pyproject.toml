@@ -1,0 +1,9 @@
+# Project config for the Python half of goose: the desktop build, the charting
+# pipeline and their tests.  The web client keeps its own config in web/.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    # pygame and librosa both warn about things this repo does not control
+    "ignore::DeprecationWarning",
+]

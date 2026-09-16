@@ -214,7 +214,7 @@ def _fetch_lyrics_words(artist: str, title: str) -> list[str]:
             + "/"
             + urllib.parse.quote(title.strip())
         )
-        req = urllib.request.Request(url, headers={"User-Agent": "KeyDash/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "goose/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
         lyrics = data.get("lyrics", "")
@@ -302,84 +302,3 @@ def _save_scores(scores: dict) -> None:
             json.dump(scores, f, indent=2)
     except Exception:
         pass
-
-
-# ─── Custom cursor ────────────────────────────────────────────────────────────
-
-import math as _math
-import pygame as _pygame
-from collections import deque as _deque
-
-# Ring buffer of (x, y, timestamp_ms) for the trail
-_cursor_trail: _deque = _deque()
-_TRAIL_DURATION_MS = 320  # how long (ms) trail points persist
-_trail_surf_cache: '_pygame.Surface | None' = None
-
-
-def draw_cursor(screen: '_pygame.Surface') -> None:
-    """Draw a white circle cursor with an osu-style velocity-driven trail (cohesive blob)."""
-    global _trail_surf_cache
-
-    mx, my = _pygame.mouse.get_pos()
-    now = _pygame.time.get_ticks()
-
-    _cursor_trail.append((mx, my, now))
-
-    # Evict points older than the trail window
-    cutoff = now - _TRAIL_DURATION_MS
-    while _cursor_trail and _cursor_trail[0][2] < cutoff:
-        _cursor_trail.popleft()
-
-    r = 11  # cursor radius
-
-    pts = list(_cursor_trail)
-
-    # --- Draw trail as a cohesive filled blob ---
-    if len(pts) > 1:
-        sw, sh = screen.get_size()
-        # Reuse a screen-sized SRCALPHA surface to avoid per-frame allocation
-        if _trail_surf_cache is None or _trail_surf_cache.get_size() != (sw, sh):
-            _trail_surf_cache = _pygame.Surface((sw, sh), _pygame.SRCALPHA)
-        trail_surf = _trail_surf_cache
-        trail_surf.fill((0, 0, 0, 0))  # clear to transparent
-
-        for i in range(len(pts) - 1):
-            x1, y1, t1 = pts[i]
-            x2, y2, t2 = pts[i + 1]
-
-            prog1 = (now - t1) / _TRAIL_DURATION_MS
-            prog2 = (now - t2) / _TRAIL_DURATION_MS
-            a1 = int(210 * (1.0 - prog1) ** 1.5)
-            a2 = int(210 * (1.0 - prog2) ** 1.5)
-            # Trail shrinks less at the tail so shadow stays large
-            r1 = max(3, int(r * (1.0 - prog1 * 0.45)))
-            r2 = max(3, int(r * (1.0 - prog2 * 0.45)))
-
-            avg_a = (a1 + a2) // 2
-            if avg_a <= 0:
-                continue
-
-            dx, dy = x2 - x1, y2 - y1
-            dist = _math.sqrt(dx * dx + dy * dy)
-
-            # Fill the gap between consecutive trail points with a quad polygon
-            if dist > 0.5:
-                nx, ny = -dy / dist, dx / dist
-                poly_pts = [
-                    (int(x1 + nx * r1), int(y1 + ny * r1)),
-                    (int(x2 + nx * r2), int(y2 + ny * r2)),
-                    (int(x2 - nx * r2), int(y2 - ny * r2)),
-                    (int(x1 - nx * r1), int(y1 - ny * r1)),
-                ]
-                _pygame.draw.polygon(trail_surf, (255, 255, 255, avg_a), poly_pts)
-
-            # Cap the older end of each segment with a circle
-            _pygame.draw.circle(trail_surf, (255, 255, 255, a1), (x1, y1), r1)
-
-        screen.blit(trail_surf, (0, 0))
-
-    # Main cursor — fully opaque white circle on top
-    sz = r * 2 + 2
-    surf = _pygame.Surface((sz, sz), _pygame.SRCALPHA)
-    _pygame.draw.circle(surf, (255, 255, 255, 255), (r + 1, r + 1), r)
-    screen.blit(surf, (mx - r, my - r))

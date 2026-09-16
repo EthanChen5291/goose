@@ -21,7 +21,6 @@ from .menu_utils import (
     _load_custom_bpms,
     _save_custom_bpms,
     start_pick_audio_file,
-    draw_cursor,
 )
 from .ui_components import Button, Petal
 from .screens import TitleScreen, LevelSelect, LevelMenu, FileUploadScreen
@@ -55,8 +54,11 @@ class MenuManager:
             if _cs not in self.song_names:
                 self.song_names.insert(0, _cs)
         self.title_screen       = TitleScreen(screen, music)
+        # the first launch at a window size builds Noki's sprite sheets; show the petals meanwhile
+        from .ui_components import PetalSpinner
         self.level_select       = LevelSelect(screen, song_names, self._scores,
-                                              canon_names=self._canon_names)
+                                              canon_names=self._canon_names,
+                                              progress=PetalSpinner(screen).tick)
         self.file_upload_screen = FileUploadScreen(screen)
         if start_state != "title":
             self.title_screen.reset()
@@ -81,6 +83,24 @@ class MenuManager:
         self._video_last_surf  = None
         self._video_frame_dur  = 1.0 / 30.0
         self._video_start_wall: float | None = None   # set on first rendered frame
+        self._video_duration   = 0.0                  # seconds, from frame count
+
+        # ── Tiny skip button (bottom-right of the intro video) ────────────────
+        self._skip_img: pygame.Surface | None = None
+        self._skip_rect: pygame.Rect | None = None
+        try:
+            _raw_skip = pygame.image.load(os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                "assets", "images", "playbutton.png",
+            )).convert_alpha()
+            _skip_h = max(16, int(screen.get_height() * 0.035))
+            _skip_w = max(1, int(_raw_skip.get_width() * _skip_h / _raw_skip.get_height()))
+            self._skip_img = pygame.transform.smoothscale(_raw_skip, (_skip_w, _skip_h))
+            _m = max(10, int(screen.get_height() * 0.02))
+            self._skip_rect = self._skip_img.get_rect(
+                bottomright=(screen.get_width() - _m, screen.get_height() - _m))
+        except Exception:
+            self._skip_img = None
 
         # ── Waiting ("...") screen ────────────────────────────────────────────
         self._show_waiting  = (music is not None and music.needs_start)
@@ -100,6 +120,9 @@ class MenuManager:
                         fps = cap.get(cv2.CAP_PROP_FPS)
                         if fps > 0:
                             self._video_frame_dur = 1.0 / fps
+                        _frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                        if _frames > 0:
+                            self._video_duration = _frames * self._video_frame_dur
                         self._video_cap = cap
                         if self._music:
                             self._music.start_intro()
@@ -130,10 +153,7 @@ class MenuManager:
         self.state = start_state
         self._scores = _load_scores()
         self._custom_bpms = _load_custom_bpms()
-        self.level_select = LevelSelect(
-            self.screen, self.song_names, self._scores,
-            canon_names=self._canon_names,
-        )
+        self.level_select.reset(self.song_names, self._scores, self._canon_names)
         self.title_screen.reset()
         self._level_menu = None
         self._uploading = False
@@ -239,6 +259,20 @@ class MenuManager:
                         x = (sw2 - self._video_last_surf.get_width()) // 2
                         self.screen.blit(self._video_last_surf, (x, 0))
 
+                    # ── Skip button ──────────────────────────────────────────
+                    if not self._video_done and self._skip_img is not None and self._skip_rect is not None:
+                        hovered = self._skip_rect.collidepoint(mouse_pos)
+                        self._skip_img.set_alpha(255 if hovered else 150)
+                        self.screen.blit(self._skip_img, self._skip_rect)
+                        if mouse_clicked and hovered:
+                            _audio.play_click()
+                            self._video_cap.release()
+                            self._video_cap  = None
+                            self._video_done = True
+                            if self._music:
+                                self._music.skip_intro_to(self._video_duration)
+                            _title_ready = (self._music is None) or self._music.title_ready
+
             if self.state == "title":
                 if _title_ready:
                     action = self.title_screen.update(dt, mouse_pos, mouse_clicked, current_time)
@@ -274,6 +308,7 @@ class MenuManager:
                                 self._custom_bpms.pop(sname, None)
                             _save_custom_bpms(self._custom_bpms)
                         self._pending_bpm = self._level_menu.bpm if self._level_menu.is_custom else None
+                        self._pending_mode = getattr(self._level_menu, "mode", "words")
                         btn = self.level_select.level_buttons[li]
                         origin = (btn.rect.centerx,
                                   btn.rect.centery - self.level_select.scroll_offset)
@@ -297,10 +332,7 @@ class MenuManager:
                         if self._upload_result:
                             _ok, _msg = self._upload_result[0]
                             if _ok:
-                                self.level_select = LevelSelect(
-                                    self.screen, self.song_names,
-                                    self._scores, self._canon_names,
-                                )
+                                self.level_select.reset(self.song_names, self._scores, self._canon_names)
 
                 if action == "back":
                     self._start_transition("title", self.level_select.back_button.rect.center)
@@ -349,8 +381,7 @@ class MenuManager:
                         if self._upload_result:
                             _ok, _msg = self._upload_result[0]
                             if _ok:
-                                self.level_select = LevelSelect(self.screen, self.song_names,
-                                                                self._scores, self._canon_names)
+                                self.level_select.reset(self.song_names, self._scores, self._canon_names)
                                 self.state = "level_select"
                             else:
                                 self.file_upload_screen.show_error(_msg)
@@ -371,8 +402,7 @@ class MenuManager:
                     elif action == "upload":
                         ok, msg = self._handle_upload(fpath, words)
                         if ok is True:
-                            self.level_select = LevelSelect(self.screen, self.song_names,
-                                                            self._scores, self._canon_names)
+                            self.level_select.reset(self.song_names, self._scores, self._canon_names)
                             self.state = "level_select"
                         elif ok is False:
                             self.file_upload_screen.show_error(msg or "Upload failed.")
@@ -389,12 +419,13 @@ class MenuManager:
                         word_bank  = self._word_bank_for(idx)
                         bpm        = self._pending_bpm
                         self._pending_bpm = None
-                        return (idx, difficulty, word_bank, bpm)
+                        mode       = getattr(self, "_pending_mode", "words") or "words"
+                        self._pending_mode = None
+                        return (idx, difficulty, word_bank, bpm, mode)
                     self.state = self.transition_target_state
                     if self.state == "title":
                         self.title_screen.reset()
 
-            draw_cursor(self.screen)
             pygame.display.flip()
 
     def _handle_upload(self, file_path, word_bank: list[str] | None):

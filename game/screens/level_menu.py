@@ -80,6 +80,19 @@ class LevelMenu:
         self._left_arrow_rect:  pygame.Rect | None = None
         self._right_arrow_rect: pygame.Rect | None = None
 
+        # play mode: a segmented switch under the difficulty — WORDS (the Highway, with duet,
+        # build and hold sections) · LETTERS (single letters on the field, osu!-style)
+        self.MODES = ["words", "letters"]
+        self.MODE_LABELS = {"words": "WORDS", "letters": "LETTERS"}
+        self.MODE_BLURB = {"words": "type words on the beat", "letters": "single letters, anywhere"}
+        self.mode = "words"
+        self._mode_rects: list[pygame.Rect] = []
+        self._mode_hover = -1
+        self._mode_slide = 0.0          # 0 = WORDS, 1 = LETTERS, lerps for the sliding highlight
+        from ..sprites import get_font as _gf
+        self._mode_font = _gf("display", max(18, int(sub_sz * 0.95)))
+        self._blurb_font = _gf("body", max(14, int(sub_sz * 0.72)))
+
         btn_w = int(pw * 0.52)
         btn_h = int(self._bot_h * 0.62)
         self._play_rect = pygame.Rect(
@@ -236,6 +249,29 @@ class LevelMenu:
         self._draw_tri(self.screen, a_col, left_cx + arrow_gap, arrow_y, "right")
         self._right_arrow_rect = pygame.Rect(left_cx + arrow_gap - 22, arrow_y - 18, 44, 36)
 
+        # Mode switch under the difficulty: two segments in one pill, the highlight slides
+        seg_w = max(120, int(clip_w * 0.30))
+        seg_h = max(34, int(self._sub_font.get_height() * 1.45))
+        mode_y = arrow_y + 30 + seg_h // 2 + 8
+        track = pygame.Rect(left_cx - seg_w, mode_y - seg_h // 2, seg_w * 2, seg_h)
+        self._mode_rects = [pygame.Rect(track.x, track.y, seg_w, seg_h), pygame.Rect(track.x + seg_w, track.y, seg_w, seg_h)]
+        # anti-aliased pill: pygame's rounded rects step along the curve, so the track, its
+        # hairline and the sliding highlight are distance-field shapes (cached per size)
+        from ..sprites import aa_rounded_rect
+        self.screen.blit(aa_rounded_rect(track.w, track.h, seg_h / 2.0, (255, 255, 255), int(22 * at)), track.topleft)
+        self.screen.blit(aa_rounded_rect(track.w, track.h, seg_h / 2.0, (255, 255, 255), int(70 * at), 1), track.topleft)
+        hx = int(round(self._mode_slide * seg_w))
+        hl = aa_rounded_rect(seg_w - 6, seg_h - 6, (seg_h - 6) / 2.0, (235, 235, 245), int(255 * at))
+        self.screen.blit(hl, (track.x + hx + 3, track.y + 3))
+        for i, m in enumerate(self.MODES):
+            on = 1.0 - min(1.0, abs(self._mode_slide - i))       # how much the highlight sits under this one
+            col = tuple(int(c) for c in (
+                (20, 20, 30) if on > 0.5 else ((230, 230, 240) if self._mode_hover == i else (170, 172, 195))))
+            lbl = self._mode_font.render(self.MODE_LABELS[m], True, col)
+            _blit_a(lbl, lbl.get_rect(center=self._mode_rects[i].center))
+        blurb = self._blurb_font.render(self.MODE_BLURB[self.mode], True, (140, 142, 165))
+        _blit_a(blurb, blurb.get_rect(center=(left_cx, track.bottom + 16)))
+
         # Right half: best score (canon) or BPM input (custom)
         right_cx = fpx + fpw * 3 // 4
         if self.is_custom and self._bpm_input is not None:
@@ -283,6 +319,7 @@ class LevelMenu:
     def _handle_input(self, mouse_pos, mouse_clicked) -> str | None:
         self._play_hovered  = self._play_rect.collidepoint(mouse_pos)
         self._close_hovered = self._close_rect.collidepoint(mouse_pos)
+        self._mode_hover = next((i for i, r in enumerate(self._mode_rects) if r.collidepoint(mouse_pos)), -1)
 
         if mouse_clicked:
             if self._play_hovered:
@@ -298,6 +335,11 @@ class LevelMenu:
                 self._diff_go(-1)
             elif self._right_arrow_rect and self._right_arrow_rect.collidepoint(mouse_pos):
                 self._diff_go(1)
+            else:
+                for i, r in enumerate(self._mode_rects):
+                    if r.collidepoint(mouse_pos):
+                        self.mode = self.MODES[i]
+                        break
 
         return None
 
@@ -319,6 +361,7 @@ class LevelMenu:
 
         target = 1.05 if self._play_hovered else 1.0
         self._play_scale += (target - self._play_scale) * min(1.0, BTN_LERP_HOVER * dt)
+        self._mode_slide += (float(self.MODES.index(self.mode)) - self._mode_slide) * min(1.0, BTN_LERP_FAST * dt)
 
         # Advance difficulty slide animation
         spd = min(1.0, BTN_LERP_FAST * dt)
@@ -357,9 +400,6 @@ class LevelMenu:
 
     @staticmethod
     def _draw_tri(screen, color, cx, cy, direction, w=14, h=22):
-        hw, hh = w // 2, h // 2
-        if direction == "left":
-            pts = [(cx - hw, cy), (cx + hw, cy - hh), (cx + hw, cy + hh)]
-        else:
-            pts = [(cx + hw, cy), (cx - hw, cy - hh), (cx - hw, cy + hh)]
-        pygame.draw.polygon(screen, color, pts)
+        from ..sprites import aa_triangle
+        tri = aa_triangle(w, h, color, "left" if direction == "left" else "right")
+        screen.blit(tri, tri.get_rect(center=(cx, cy)))

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
@@ -93,7 +93,7 @@ class RhythmSlot:
     priority: int  # 1 = weak, 2 = medium, 3 = strong
     is_filled: bool
     beat_position: float
-    
+
 class RestType(Enum):
      PAUSE = auto()
      FILL = auto()
@@ -117,12 +117,38 @@ class CharEvent:
     section: int
     is_rest: bool = False
     hit: bool = False
-    from_left: bool = False  # True = note comes from left side (dual-side mode)
+    from_left: bool = False  # legacy dual-side flag (unused by the Highway)
     hold_duration: float = 0.0  # > 0 = hold note; player must hold for this many seconds
     repeat_group_id: int = 0    # 0 = not part of a repeat group; shared ID across all iterations
     repeat_iter: int = 0        # 1-based iteration index within the group (0 = not a repeat)
+    # --- Highway / charting fields
+    weight: int = -1            # metric weight 4 beat1, 3 beat3, 2 backbeat, 1 eighth, 0 sixteenth; -1 unknown
+    lane: int = -1              # keyboard hand zone 0..3; -1 = derive from char
+    voice: int = -1             # duet voice: -1 none, 0 beat (left hand), 1 tune (right hand)
+    line_id: int = 0            # duet line / word instance id
+    word_id: int = 0            # unique id per word instance in the chart
+    section_kind: str = ""      # "" normal, "duet", "kiai", "rest"
 
-# --- engine 
+    def copy(self) -> "CharEvent":
+        return CharEvent(**self.__dict__)
+
+
+@dataclass
+class HitRecord:
+    """One row per press or timeout, the raw material of the typing coach."""
+    t_song: float           # chart time of the note (hits/misses) or press (slips)
+    expected: str
+    pressed: str            # "" for a timeout
+    judgment: str           # perfect | good | ok | miss | slip | too_early | hold_broken | hold_perfect...
+    offset_ms: float        # press - note, signed; 0 for misses
+    word: str = ""
+    char_idx: int = -1
+    gap_ms: float = -1.0    # since the previous press of any key
+    weight: int = -1
+    lane: int = -1
+    voice: int = -1
+
+# --- engine
 
 class Song:
     def __init__(self, bpm: float, duration: float, file_path: str, beat_times: Optional[list[float]] = None):
@@ -132,8 +158,10 @@ class Song:
         self.beat_times = beat_times or []
 
 class Level:
-    def __init__(self, word_bank: list[str], song_path: str, bpm: Optional[int] = None, difficulty: str = "classic"):
+    def __init__(self, word_bank: list[str], song_path: str, bpm: Optional[int] = None, difficulty: str = "classic",
+                 mode: str = "words"):
         self.word_bank = word_bank
         self.song_path = song_path
         self.bpm = bpm
         self.difficulty = difficulty
+        self.mode = mode   # words | letters | duet
