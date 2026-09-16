@@ -69,12 +69,11 @@ const sfxUrl = (n: string, ext = 'wav') => `audio/sfx/${n}.${ext}`
 const RUN_STEPS = ['gooserun1', 'gooserun2', 'gooserun3'].map((n) => sfxUrl(n, 'mp3'))
 /**
  * The menu theme: 165 bpm, and cut by tools/export_web.py to a whole 72 bars
- * that open on its first beat — the drop — with the room tone before it and the
- * silence after it gone, and the last 3/4 beat spliced back in from the bar the
- * outro's phrase repeats, because the track was written to end rather than to
- * come round again.  So the file is the loop: it repeats end to end, in time,
- * playing into its own downbeat, and there is nothing to sit through before the
- * title lands.
+ * that open on its first beat — the drop — with the master's pickup moved off
+ * the front and mixed into the last beat, where the track's ring-out had left
+ * the loop nothing to lift into.  So the file is the loop: it repeats end to
+ * end, in time, driving into its own downbeat, and there is nothing to sit
+ * through before the title lands.
  */
 const THEME = 'audio/theme.mp3'
 const THEME_BEAT = 60 / 165

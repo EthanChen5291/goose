@@ -2,6 +2,7 @@
 import { chromium } from 'playwright'
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=metal', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required', '--ignore-gpu-blocklist'] })
 const page = await browser.newPage({ viewport: { width: 1512, height: 887 }, deviceScaleFactor: 2 })
+page.on('console', (m) => { if (m.text().startsWith('[dbg')) console.log(m.text()) })
 await page.goto('http://localhost:5173', { waitUntil: 'networkidle' })
 await page.waitForSelector('.title-play', { timeout: 20000 })
 await page.waitForTimeout(1200)

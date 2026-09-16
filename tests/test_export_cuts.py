@@ -38,21 +38,14 @@ def test_the_theme_starts_on_its_first_beat(export):
     assert 0.3 < export.THEME.start < 0.4
 
 
-def test_the_theme_fill_is_the_same_beat_a_phrase_back(export):
-    """The splice only disappears if it is the bar the ear already heard.
+def test_the_theme_pickup_is_about_a_beat_long(export):
+    """What start trims is the master's lift into bar 1, and it is used as such.
 
-    The outro runs its 8-bar phrase twice, so the beat missing from the last bar
-    is the one 8 bars — 32 beats — behind it, and on the same subdivision.
+    A pickup that came out longer than a beat would be trimming music, and one
+    much shorter would not reach the ring it is mixed over.
     """
-    assert export.THEME_FILL_AT - export.THEME_FILL_FROM == 32
-    assert export.THEME_FILL_AT % 1 == export.THEME_FILL_FROM % 1
-
-
-def test_the_theme_fill_reaches_the_end_of_the_cut(export):
-    """A fill that stopped short would leave the hole it was cut to close."""
     beat = 60 / export.THEME_BPM
-    assert export.THEME_FILL_AT * beat < export.THEME.dur
-    assert export.THEME.dur - export.THEME_FILL_AT * beat < beat
+    assert 0.8 * beat < export.THEME.start <= beat
 
 
 def test_every_waddle_is_trimmed_and_levelled(export):
@@ -127,21 +120,31 @@ def test_the_theme_is_cut_and_spliced_in_one_pass(export):
     assert "libmp3lame" in args and args[-1] == "out.mp3"
 
 
-def test_the_theme_splice_lands_where_the_playing_stops(export):
-    """A fill delayed to the wrong beat is the dropped beat, moved."""
-    beat = 60 / export.THEME_BPM
+def test_the_theme_takes_its_lift_from_the_head_of_the_master(export):
+    """The pickup is what start trims, so the second trim opens at zero."""
     args = export.theme_args("in.wav", "out.mp3")
     graph = args[args.index("-filter_complex") + 1]
-    delay_ms = float(graph.split("adelay=")[1].split(":")[0])
-    assert delay_ms / 1000 == pytest.approx(export.THEME_FILL_AT * beat, abs=1e-3)
+    assert f"atrim=start=0:duration={export.THEME.start:.6f}" in graph
 
 
-def test_the_theme_splice_is_mixed_under_the_ring_it_joins(export):
+def test_the_theme_lift_ends_exactly_where_the_cut_does(export):
+    """A pickup delayed to the wrong beat is the dropped beat, moved.
+
+    It has to land so its last sample is the cut's last sample; anywhere else
+    and the loop either doubles a beat or keeps the hole it was cut to close.
+    """
+    args = export.theme_args("in.wav", "out.mp3")
+    graph = args[args.index("-filter_complex") + 1]
+    delay = float(graph.split("adelay=")[1].split(":")[0]) / 1000
+    assert delay + export.THEME.start == pytest.approx(export.THEME.dur, abs=1e-3)
+
+
+def test_the_theme_lift_is_mixed_under_the_ring_it_joins(export):
     """Replacing the ending would cut the decay off; amix keeps it."""
     args = export.theme_args("in.wav", "out.mp3")
     graph = args[args.index("-filter_complex") + 1]
     assert "amix=inputs=2:duration=first:normalize=0" in graph
-    assert f"afade=t=in:st=0:d={export.THEME_FILL_FADE}" in graph
+    assert f"afade=t=in:st=0:d={export.THEME_PICKUP_FADE}" in graph
 
 
 def test_the_theme_ends_on_a_ramp_into_the_downbeat(export):

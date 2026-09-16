@@ -1067,6 +1067,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   const finishTravel = (t: number): void => {
     const tv = travel!
     tv.stage = 'settled'
+    if (tv.pending) unpark(tv)
     if (!tv.thrown) { tv.thrown = true; startArrival(nodeSel, t) }
     const rs = tv.resolvers
     tv.resolvers = []
@@ -1087,7 +1088,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       else if (tv.legs.length) drone.lookAt(isle.at.clone().add(new THREE.Vector3(0, 14, 0)))
       else if (drone.remaining() < 90) drone.lookAt(isle.cam.look)
       // thrown a beat before the drone gets there, so the landing is what it arrives on; a door waits to be opened first
-      if (!tv.legs.length && !tv.thrown && !isle.arrive && drone.remaining() < 150) { tv.thrown = true; startArrival(nodeSel, t) }
+      if (!tv.legs.length && !tv.thrown && !isle.arrive && drone.remaining() < 150) { if (tv.pending) unpark(tv); tv.thrown = true; startArrival(nodeSel, t) }
       // near enough: the chrome comes in while the drone is still easing onto its mark
       if (!tv.legs.length && drone.settled(9, 18)) {
         if (isle.arrive) { tv.until = t + isle.arrive(t); tv.stage = 'arrive'; drone.shake(0.5, 0.35) }
@@ -1095,7 +1096,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       }
     } else if (tv.stage === 'arrive') {
       if (t > tv.until) {
-        if (!tv.thrown) { tv.thrown = true; startArrival(nodeSel, t) }
+        if (!tv.thrown) { if (tv.pending) unpark(tv); tv.thrown = true; startArrival(nodeSel, t) }
         if (isle.camIn) {
           drone.fly(isle.camIn.pos, { cruise: 42, accel: 40, fov: isle.camIn.fov, sloppy: 1.5, hesitate: 0.4 })
           drone.lookAt(isle.camIn.look)

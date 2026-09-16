@@ -57,26 +57,26 @@ class Cut(NamedTuple):
 
 
 # The menu theme.  The track is 165 bpm and its drop is its first beat, so the
-# cut starts there — the moment before it is room, not music — and runs a whole
-# 72 bars, which is every bar the track has.  Looping the file end to end is
-# then the whole of it, in time, with no silence to sit through.
+# cut starts there and runs a whole 72 bars, which is every bar the track has.
+# Looping the file end to end is then the whole of it, in time.
 THEME_BPM = 165
 THEME = Cut(os.path.join("built-in", "goose.wav"), "theme.mp3",
             start=0.3468, dur=72 * 4 * 60 / THEME_BPM)
 
-# Except that the track was written to end, not to come round again: its last
-# note lands on beat 287 and rings out, so the closing 3/4 beat is decay alone.
-# The file is still a whole 72 bars and the seam is still on the grid, but with
-# nothing driving into the downbeat the ear hears the loop drop a beat.
+# What `start` trims is not room tone: it is a beat of sustained bass with no
+# attack in it, at the level of the drop and carrying the drop's own low end.
+# It is the track's pickup — the lift the master renders ahead of bar 1 — and
+# where it belongs is the end of a pass, not the front of the file.
 #
-# The outro runs an 8-bar phrase twice, which makes the last bar the same bar as
-# bar 63 — so the 3/4 beat the arrangement would have played into the downbeat
-# is the one 8 bars back.  It is mixed in over the ring rather than replacing
-# it, so the ending still decays, and the cut ends on a 4 ms ramp because the
-# fill is live audio where there used to be near-silence to splice.
-THEME_FILL_AT = 287.25    # beats into the cut: where the playing stops
-THEME_FILL_FROM = 255.25  # the same beat of the same bar, one 8-bar phrase back
-THEME_FILL_FADE = 0.02    # seconds: the splice in, under the ring it joins
+# It has to go somewhere, because the track was written to end rather than to
+# come round again: the last note lands on beat 287 and rings out, so the
+# closing 3/4 beat is decay alone.  The file is a whole 72 bars and the seam is
+# on the grid, but with nothing driving into the downbeat the ear hears the loop
+# drop a beat.  Mixing the pickup in over that ring — rather than replacing it,
+# so the ending still decays under it — is the lift the loop point was missing,
+# in the composer's own hand.  The cut then ends on a 4 ms ramp, because where
+# there used to be near-silence to splice there is now the bass of the drop.
+THEME_PICKUP_FADE = 0.02  # seconds: the pickup in, under the ring it joins
 THEME_END_FADE = 0.004    # seconds: the splice out, into the loop's downbeat
 
 # The recorded effects.  The waddles open on a moment of room tone that lands as
@@ -157,22 +157,20 @@ def encode_args(src: str, dst: str, peak_db: float | None = None,
 def theme_args(src: str, dst: str) -> list[str]:
     """The ffmpeg call that writes the looping menu theme.
 
-    The plain cut plus the fill described at `THEME_FILL_AT`: the same source,
-    trimmed twice and mixed, so the last 3/4 beat carries the groove into the
-    downbeat the loop returns to.  Like `encode_args`, it is the whole recipe
-    and nothing done yet, so the splice can be read without running an encoder.
+    The 72-bar cut, with the pickup `start` trims moved to the end of it: the
+    same master, trimmed twice and mixed, so every pass lifts into the downbeat
+    it returns to.  Like `encode_args`, it is the whole recipe and nothing done
+    yet, so the splice can be read — and tested — without an encoder.
     """
-    beat = 60 / THEME_BPM
     dur = THEME.dur
-    hole = THEME_FILL_AT * beat
-    fill = dur - hole
+    pickup = THEME.start          # the master runs bar 1 from here, so this is its length
     graph = (
         f"[0:a]atrim=start={THEME.start:.6f}:duration={dur:.6f},"
         f"asetpts=PTS-STARTPTS[body];"
-        f"[0:a]atrim=start={THEME.start + THEME_FILL_FROM * beat:.6f}:duration={fill:.6f},"
-        f"asetpts=PTS-STARTPTS,afade=t=in:st=0:d={THEME_FILL_FADE},"
-        f"adelay={hole * 1000:.1f}:all=1[fill];"
-        f"[body][fill]amix=inputs=2:duration=first:normalize=0,"
+        f"[0:a]atrim=start=0:duration={pickup:.6f},"
+        f"asetpts=PTS-STARTPTS,afade=t=in:st=0:d={THEME_PICKUP_FADE},"
+        f"adelay={(dur - pickup) * 1000:.1f}:all=1[lift];"
+        f"[body][lift]amix=inputs=2:duration=first:normalize=0,"
         f"afade=t=out:st={dur - THEME_END_FADE:.6f}:d={THEME_END_FADE}[out]"
     )
     return ["ffmpeg", "-v", "error", "-y", "-i", src, "-filter_complex", graph,
