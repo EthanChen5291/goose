@@ -7,7 +7,7 @@
  * `goose_rig.ts`: the sprite's own proportions and colours, fully three
  * dimensional, animated by clips.
  *
- * The world plays four scenes:
+ * The world plays five scenes:
  *
  *   · `menu`    the title.  The camera looks almost straight down on the
  *               meadow; the menu's buttons are flat plates floating over the
@@ -23,12 +23,23 @@
  *               the plate rockets off with the goose on it — smeared, through
  *               a trail of feathers and cloud — or, for settings, tips and
  *               spills the goose into a hole that opens in the ground.
- *   · `map`     the level select.  Round stones along the path.  The goose
- *               arrives the way it left: thrown in at speed, tumbling as a
- *               rigid thing, smeared along its flight, bouncing, skidding a
- *               streak into the grass, then getting up dizzy (ドドド) and
- *               waddling — fast, rough — to its stone.  On the stone it idles:
- *               honks at you, looks around, startles, glowers.
+ *   · `chase`   PLAY was pressed.  The plate climbs away toward a bank of
+ *               cloud with the goose on it.  The camera — a drone now, flown
+ *               by somebody (`drone.ts`) — watches it go, loses it, turns
+ *               after it roughly, and gives chase: up, into the cloud, a
+ *               whiteout, and out the other side over the islands
+ *               (`islands.ts`): the archipelago the levels live on, each
+ *               island its own biome at its own height, the sea far below.
+ *               It swings across them and drops toward the one the goose is
+ *               bound for.
+ *   · `map`     the level select, on an island.  Round stones along its
+ *               walkway.  The goose arrives the way it left: thrown in at
+ *               speed, tumbling as a rigid thing, smeared along its flight,
+ *               bouncing, skidding a streak into the ground, then getting up
+ *               dizzy (ドドド) and waddling — fast, rough — to its stone.  On
+ *               the stone it idles: honks at you, looks around, startles,
+ *               glowers.  Turning the page flies the drone to the next
+ *               island; the vault's door has to be unlocked before it goes in.
  *   · `abduct`  play was pressed.  The camera holds; a saucer races in over
  *               the goose, its beam lifts the bird a little, and a pair of
  *               slapstick gloves snap in and clap it flat while it is still
@@ -48,9 +59,13 @@ import { Emotes, feathers as mkFeathers, dust as mkDust, puffs as mkPuffs } from
 import type { EmoteKind } from './goose_fx'
 import {
   buildMeadow, driftMeadow, toonRamp, buildPlate, buildNode, buildUfo, buildHand, buildHero, applyHeroPose, POSES, buildHole, buildSkid,
-  spriteVoxels, voxelMesh, menacingSprites, WORLDS, DUSK, SKY, HORIZON, pathZ, PLATE_THICK, FEET,
+  spriteVoxels, voxelMesh, menacingSprites, WORLDS, DUSK, SKY, HORIZON, PLATE_THICK, FEET,
 } from './goose_world'
 import type { PoseName } from './goose_world'
+import { Drone } from './drone'
+import { Kit, mixHex } from './island_kit'
+import type { Island } from './island_kit'
+import { buildArchipelago, WALL } from './islands'
 
 export type ExitKind = 'right' | 'left' | 'trap'
 
@@ -71,19 +86,28 @@ export interface GooseMovie {
   menuPointer: (x: number, y: number) => number
   /** where plate `i`'s top is on screen: x, y, w, h in game pixels */
   menuBox: (i: number) => [number, number, number, number]
-  /** the press: the phone shot, then the exit; resolves once the goose is gone */
+  /**
+   * The press: the phone shot, then the exit; resolves once the goose is
+   * gone.  For PLAY the movie carries on by itself into the chase, and the
+   * shell's next screen finds it mid-flight.
+   */
   menuPress: (i: number, kind: ExitKind) => Promise<void>
   /**
-   * The world map: the camera flies up over the path and `count` stones stand
-   * along it; `done[i]` plants a flag; the goose is on `selected`.  With
-   * `arrive` the goose is thrown in from off-screen and walks to its stone.
+   * The world map on island `world`: `count` stones stand along its walkway;
+   * `done[i]` plants a flag; the goose is on `selected`.  With `arrive` the
+   * goose is thrown in and walks to its stone.  A different island from the
+   * one the drone is over means a flight; resolves once the drone is on its
+   * mark there (and, for the vault, inside).
    */
-  map: (count: number, selected: number, done: boolean[], arrive?: boolean) => void
+  map: (count: number, selected: number, done: boolean[], arrive?: boolean, world?: number) => Promise<void>
+  /** how many islands there are, and what island `k` is called */
+  worlds: number
+  worldName: (k: number) => string
   /** the goose goes to stone `i` */
   gooseTo: (i: number) => void
   /** where stone `i` is on the screen, in game pixels */
   project: (i: number) => [number, number]
-  /** the world's light: 0 noon · 1 dusk · 2 night · 3 storm · 4 dawn */
+  /** the world the map is on (the sky follows the drone, so this only records it) */
   setWorld: (k: number) => void
   /** the saucer, the beam, the slap; resolves as the flat goose is drawn up */
   abduct: () => Promise<void>
@@ -111,17 +135,22 @@ const PLATE_SPECS: { x: number; z: number; w: number; d: number }[] = [
 ]
 const PLATE_CX = -4
 const PLATE_CZ = -3
+/** where the bird went through the cloud: its feet, on the PLAY plate's line */
+const HOLE = { y: PLATE_TOP, z: PLATE_CZ + 0.5 }
 /** plates further apart than this are flown to, not hopped */
 const FAR = 40
+/** a crossing shorter than this is one leap straight onto the goal, with no landing shuffle */
+const NEAR_HOP = 14
 const NODE_TOP = 1.6
 /** the menu camera: nearly overhead, the plates low and right of the wordmark */
 const MENU_LOOK = new THREE.Vector3(PLATE_CX - 2, PLATE_Y, PLATE_CZ + 2)
 const MENU_CAM = new THREE.Vector3(PLATE_CX - 2, PLATE_Y + 78, PLATE_CZ + 22)
 const MENU_FOV = 42
-const MAP_CAM = new THREE.Vector3(0, 38, 50)
-const MAP_LOOK = new THREE.Vector3(0, 0, 5)
 const UP = new THREE.Vector3(0, 1, 0)
 const ONE = new THREE.Vector3(1, 1, 1)
+/** the meadow's fog, and the fog out over the islands, where the far ones should still show */
+const FOG_NEAR = 150, FOG_FAR = 300, FAR_NEAR = 260, FAR_FAR = 1500
+const SUN_OFF = new THREE.Vector3(40, 60, 30)
 
 const smooth = (u: number) => u * u * (3 - 2 * u)
 const lerp = (a: number, b: number, k: number) => a + (b - a) * k
@@ -152,7 +181,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   const ramp = toonRamp()
   const base = new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: ramp })
 
-  const sun = new THREE.DirectionalLight(0xfff1d6, 2.4)
+  const sun = new THREE.DirectionalLight(0xfff1d6, 2.6)
   sun.position.set(40, 60, 30)
   sun.castShadow = true
   sun.shadow.mapSize.set(2048, 2048)
@@ -161,7 +190,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   sun.shadow.camera.near = 10; sun.shadow.camera.far = 240
   sun.shadow.bias = -0.002
   scene.add(sun, sun.target)
-  const hemi = new THREE.HemisphereLight(0xbfe3ff, 0x5f8f3a, 1.1)
+  const hemi = new THREE.HemisphereLight(0xbfe3ff, 0x8a7a6a, 1.1)
   scene.add(hemi)
 
   const meadow = buildMeadow(scene, base)
@@ -199,13 +228,28 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   const nodeRoot = new THREE.Group()
   scene.add(nodeRoot)
 
-  const camera = new THREE.PerspectiveCamera(38, 16 / 9, 0.25, 500)
+  const camera = new THREE.PerspectiveCamera(38, 16 / 9, 0.25, 2500)
   const look = new THREE.Vector3()
   let camRoll = 0
   let w = 384, h = 216
+  // ── the smear: the last frame drawn back over this one, a touch bigger, when the drone is going flat out ──
+  // a pixel buffer cannot blur, but it can remember: each frame keeps a fading
+  // trace of the one before, swelling from the middle, so speed reads as a
+  // smear of everything rushing past rather than lines drawn on top
+  let ghostTex: THREE.FramebufferTexture | null = null
+  const ghostMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false })
+  const ghost = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), ghostMat)
+  const ghostScene = new THREE.Scene()
+  ghostScene.add(ghost)
+  const ghostCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
   const resize = (nw: number, nh: number): void => {
     w = nw; h = nh
     renderer.setSize(w, h, false)
+    ghostTex?.dispose()
+    ghostTex = new THREE.FramebufferTexture(w, h)
+    ghostTex.colorSpace = THREE.SRGBColorSpace
+    ghostMat.map = ghostTex
+    ghostMat.needsUpdate = true
     canvas.style.width = `${w}px`
     canvas.style.height = `${h}px`
     camera.aspect = w / h
@@ -218,6 +262,11 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   let onCue: ((name: string) => void) | null = null
   const cue = (name: string): void => { onCue?.(name) }
 
+  // ── out past the meadow: the islands, and the drone that films them ───────
+  const kit = new Kit(base)
+  const arch = buildArchipelago(kit, scene, (n) => cue(n), HOLE)
+  const drone = new Drone()
+  const aimF = new THREE.Vector3()
   // ── the sky ───────────────────────────────────────────────────────────────
   const paint = (p: [number, number, number, number]): void => {
     ;(scene.background as THREE.Color).setHex(p[0])
@@ -252,7 +301,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   }
 
   // ── the goose's state ─────────────────────────────────────────────────────
-  type Mode = 'hold' | 'menu' | 'press' | 'tomap' | 'map' | 'abduct' | 'win'
+  type Mode = 'hold' | 'menu' | 'press' | 'chase' | 'map' | 'abduct' | 'win'
   let mode: Mode = 'hold'
   const gpos = new THREE.Vector3(0, 0, 0)
   let gyaw = -0.35
@@ -347,7 +396,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   const goal = new THREE.Vector3()
   /** where the pointer is on the plates' plane, when it is known */
   let pointer: THREE.Vector3 | null = null
-  interface Air { kind: 'hop' | 'fly'; from: THREE.Vector3; to: THREE.Vector3; t0: number; dur: number }
+  interface Air { kind: 'hop' | 'fly'; from: THREE.Vector3; to: THREE.Vector3; t0: number; dur: number; plate: number }
   let air: Air | null = null
   let watchYaw = 0, watchT = -9
   const plane = new THREE.Plane(UP, -PLATE_TOP)
@@ -378,14 +427,48 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     plates.forEach((_pl, i) => { const d = onPlate(i, p, 0).distanceTo(p); if (d < bd) { bd = d; best = i } })
     return best
   }
-  /** the point on plate `i`'s rim in the direction of `toward`, a step in from the edge */
-  const rimPoint = (i: number, toward: THREE.Vector3): THREE.Vector3 => {
+  /** plate `i`'s top, inset `m` from every edge, as [x0, x1, z0, z1] */
+  const inset = (i: number, m: number): [number, number, number, number] => {
     const pl = plates[i]
-    const c = pl.pos.clone().setY(PLATE_TOP)
-    const dx = toward.x - c.x, dz = toward.z - c.z
-    const m = 1.2
-    const s = Math.min(Math.abs(dx) > 1e-3 ? (pl.w / 2 - m) / Math.abs(dx) : 1e9, Math.abs(dz) > 1e-3 ? (pl.d / 2 - m) / Math.abs(dz) : 1e9)
-    return new THREE.Vector3(c.x + dx * s, PLATE_TOP, c.z + dz * s)
+    return [pl.pos.x - pl.w / 2 + m, pl.pos.x + pl.w / 2 - m, pl.pos.z - pl.d / 2 + m, pl.pos.z + pl.d / 2 - m]
+  }
+  /**
+   * How much of the line `from`→`to` lies over plate `i` (inset `m`), as the
+   * fractions at which it enters and leaves.  `enter > leave` means it misses
+   * the plate altogether.
+   */
+  const span = (i: number, from: THREE.Vector3, to: THREE.Vector3, m: number): [number, number] => {
+    const [x0, x1, z0, z1] = inset(i, m)
+    let enter = -Infinity, leave = Infinity
+    for (const [f, a, b, d] of [[from.x, x0, x1, to.x - from.x], [from.z, z0, z1, to.z - from.z]] as const) {
+      if (Math.abs(d) < 1e-4) { if (f < a || f > b) return [1, 0]; continue }
+      const s0 = (a - f) / d, s1 = (b - f) / d
+      enter = Math.max(enter, Math.min(s0, s1))
+      leave = Math.min(leave, Math.max(s0, s1))
+    }
+    return [enter, leave]
+  }
+  /** the point `s` of the way along the line `from`→`to`, on the plates' top */
+  const along = (from: THREE.Vector3, to: THREE.Vector3, s: number): THREE.Vector3 => {
+    const k = clamp01(s)
+    return new THREE.Vector3(from.x + (to.x - from.x) * k, PLATE_TOP, from.z + (to.z - from.z) * k)
+  }
+  /**
+   * The plate to leap to from `from`, on the way to the goal.
+   *
+   * Normally the goal's own plate, but a plate lying across the way is used as
+   * a stepping stone when it is both a shorter leap and real progress, so a
+   * long diagonal is crossed in steps rather than one improbable bound.
+   */
+  const leapPlate = (from: THREE.Vector3): number => {
+    let best = goalPlate, bd = onPlate(goalPlate, from, 1.2).distanceTo(from)
+    const far = from.distanceTo(goal)
+    plates.forEach((_pl, i) => {
+      if (i === standPlate || i === goalPlate) return
+      const p = onPlate(i, from, 1.2)
+      if (p.distanceTo(from) < bd && p.distanceTo(goal) < far - 0.5) { bd = p.distanceTo(from); best = i }
+    })
+    return best
   }
   const MENU_SPEED = 21
   const tickMenu = (t: number, dt: number, beat: number): void => {
@@ -406,7 +489,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       faceToward(air.to.clone().sub(air.from), dt, 14)
       if (u >= 1) {
         gpos.copy(air.to)
-        standPlate = goalPlate
+        standPlate = air.plate
         air = null
         cue('land')
         dust.spawn(gpos, 2, t, new THREE.Vector3(0, 1, 0), 2)
@@ -414,15 +497,27 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
         cur = clips.crouch()
       }
     } else if (goalPlate !== standPlate) {
-      // to the edge nearest the goal, then over
-      const rim = rimPoint(standPlate, goal)
-      if (gpos.distanceTo(rim) < 0.6 || walk(rim, dt, t, MENU_SPEED)) {
-        const to = rimPoint(goalPlate, gpos)
-        const gap = gpos.distanceTo(to)
-        air = { kind: gap > FAR ? 'fly' : 'hop', from: gpos.clone(), to, t0: t, dur: gap > FAR ? 0.4 + gap / 70 : 0.26 + gap / 40 }
-        standPlate = -1
-        cue(air.kind === 'fly' ? 'whoosh' : 'jump')
-        if (Math.random() < 0.15) emote('quest', t)
+      // off this plate where the line to the goal crosses the edge — straight at
+      // the cursor, so walking to the take-off never means walking away from it
+      const off = along(gpos, goal, span(standPlate, gpos, goal, 1.2)[1])
+      if (gpos.distanceTo(off) < 0.6 || walk(off, dt, t, MENU_SPEED)) {
+        // and onto the nearest bit of the next plate — the shortest leap that
+        // will do, which for a plate holding the goal is always progress toward it
+        const plate = leapPlate(gpos)
+        const to = plate === goalPlate && gpos.distanceTo(goal) < NEAR_HOP ? goal.clone().setY(PLATE_TOP) : onPlate(plate, gpos, 1.2)
+        const d = to.clone().sub(gpos).setY(0)
+        if (Math.abs(wrapAngle(yawOf(d) - gyaw)) > 0.55) {
+          // face the leap before taking it, so it reads as one move and not a sidestep
+          faceToward(d, dt, 13)
+          stride += dt * 7
+          want = clips.waddle(stride)
+        } else {
+          const gap = gpos.distanceTo(to)
+          air = { kind: gap > FAR ? 'fly' : 'hop', from: gpos.clone(), to, t0: t, dur: gap > FAR ? 0.4 + gap / 70 : 0.26 + gap / 40, plate }
+          standPlate = -1
+          cue(air.kind === 'fly' ? 'whoosh' : 'jump')
+          if (Math.random() < 0.15) emote('quest', t)
+        }
       }
     } else if (walk(goal, dt, t, MENU_SPEED)) {
       standing = true
@@ -452,8 +547,39 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     slide: THREE.Vector3; vel: THREE.Vector3; off: boolean; inHole: number; holeAt: THREE.Vector3
   }
   let press: Press | null = null
+  /**
+   * The plate racing off with the goose on it, `e` seconds into the exit.
+   * PLAY's runs dead level — it is bound for the cloud, straight through it —
+   * and SONGS' is gone before it matters.  The plate is the thing doing the racing, not a thing
+   * being thrown: it stays dead flat and simply leaves, shuddering on its
+   * axis as it goes.
+   */
+  const launchStep = (p: Press, e: number, t: number, dt: number): void => {
+    const plate = plates[p.plate]
+    const dir = p.kind === 'right' ? 1 : -1
+    const up = 0
+    const dist = p.kind === 'right' ? 30 * e + 500 * e * e : 30 * e + 1300 * e * e
+    const dd = p.kind === 'right' ? 30 * dt + 1000 * e * dt : 30 * dt + 2600 * e * dt
+    plate.g.position.set(plate.pos.x + dir * dist, plate.pos.y + Math.sin(e * 18) * 0.4 + up, plate.pos.z)
+    plate.g.rotation.set(0, 0, 0)
+    gpos.x += dir * dd
+    gpos.y = PLATE_TOP + 0.3 + Math.abs(Math.sin(e * 24)) * 0.5 + up
+    faceToward(new THREE.Vector3(dir, 0, 0), dt, 30)
+    // drawn, not tweened: the pose steps on twos and the cycle is four drawings —
+    // a squash as it takes the hit, a long smear, a half smear, then a held frame
+    const drawT = Math.floor(t * 12) / 12
+    want = clips.panic(drawT)
+    cur = want
+    snapPose = true
+    const fr = Math.floor(e * 12) % 4
+    smear([0.74, 3.2, 1.7, 1][fr], [1.22, 0.5, 0.77, 1][fr])
+    if (t - p.lastBang > 0.2) { p.lastBang = t; emote(Math.random() < 0.7 ? 'bang' : 'quest', t, 0.5) }
+    // a continuous trail: feathers every frame, cloud behind
+    feathers.spawn(gpos.clone().add(new THREE.Vector3(-dir * 1.5, 1.2, 0)), 2, t, new THREE.Vector3(-dir * 14, 3, 0), 6)
+    if (e < 0.5) puffs.spawn(gpos.clone().add(new THREE.Vector3(-dir * 3, 0.6, 0)), 2, t, new THREE.Vector3(-dir * 2, 1.2, 0), 3)
+  }
   const SELFIE_IN = 0.3
-  const SELFIE_HOLD = 0.95
+  const SELFIE_HOLD = 0.75
   const tickPress = (t: number, dt: number, beat: number): void => {
     const p = press!
     const age = t - p.t0
@@ -492,33 +618,13 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     const base0 = gpos.clone()
     if (!p.started) { p.started = true; p.slide.copy(gpos).sub(plate.pos); cue(p.kind === 'trap' ? 'trap' : 'crash_zoom') }
     if (p.kind === 'right' || p.kind === 'left') {
-      const dir = p.kind === 'right' ? 1 : -1
-      const dist = 30 * e + 1300 * e * e
-      const dd = 30 * dt + 2600 * e * dt
-      // the plate is the thing doing the racing, not a thing being thrown: it stays
-      // dead flat and simply leaves, shuddering on its axis as it goes
-      plate.g.position.set(plate.pos.x + dir * dist, plate.pos.y + Math.sin(e * 18) * 0.4, plate.pos.z)
-      plate.g.rotation.set(0, 0, 0)
-      gpos.x += dir * dd
-      gpos.y = PLATE_TOP + 0.3 + Math.abs(Math.sin(e * 24)) * 0.5
-      faceToward(new THREE.Vector3(dir, 0, 0), dt, 30)
-      // drawn, not tweened: the pose steps on twos and the cycle is four drawings —
-      // a squash as it takes the hit, a long smear, a half smear, then a held frame
-      const drawT = Math.floor(t * 12) / 12
-      want = clips.panic(drawT)
-      cur = want
-      snapPose = true
-      const fr = Math.floor(e * 12) % 4
-      smear([0.74, 3.2, 1.7, 1][fr], [1.22, 0.5, 0.77, 1][fr])
-      if (t - p.lastBang > 0.2) { p.lastBang = t; emote(Math.random() < 0.7 ? 'bang' : 'quest', t, 0.5) }
-      // a continuous trail: feathers every frame, cloud behind
-      feathers.spawn(gpos.clone().add(new THREE.Vector3(-dir * 1.5, 1.2, 0)), 2, t, new THREE.Vector3(-dir * 14, 3, 0), 6)
-      if (e < 0.5) puffs.spawn(gpos.clone().add(new THREE.Vector3(-dir * 3, 0.6, 0)), 2, t, new THREE.Vector3(-dir * 2, 1.2, 0), 3)
+      launchStep(p, e, t, dt)
       // the camera stays where the phone was, pulls up a little, and pans after the goose
       const k = easeOut(clamp01(e / 0.45))
       camera.position.copy(p.selfieCam).addScaledVector(f, -2.5 * k).add(new THREE.Vector3(0, 6 * k, 3 * k))
       look.copy(gpos).add(new THREE.Vector3(0, 1.5, 0))
       camera.fov = lerp(100, 66, k)
+      if (p.kind === 'right' && e >= 0.3) { startChase(t); return }
       if (!p.done && e >= 0.55) { p.done = true; p.resolve() }
     } else {
       // the trapdoor: the plate tips — its near edge going down — the goose scrabbles up the slope,
@@ -581,15 +687,21 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     standRig()
   }
 
-  // ── the map: stones along the path, the goose thrown in ───────────────────
+  // ── the islands: where the map plays ──────────────────────────────────────
+  let isle: Island = arch.islands[0]
+  /** the ground under the goose: the island's walkway level, world y */
+  let gY = 0
+  const setIsle = (k: number): void => {
+    const dest = arch.islands[((k % arch.islands.length) + arch.islands.length) % arch.islands.length]
+    if (dest !== isle) isle.leave?.()
+    isle = dest
+    gY = isle.at.y
+    feathers.floor = dust.floor = puffs.floor = gY + 0.15
+  }
   let nodes: THREE.Group[] = []
   let nodeSel = 0
-  const nodePos = (i: number, n = nodes.length): THREE.Vector3 => {
-    n = Math.max(1, n)
-    const x = n <= 1 ? 0 : -27 + (54 * i) / (n - 1)
-    return new THREE.Vector3(x, 0, pathZ(x))
-  }
-  const nodeTop = (i: number): THREE.Vector3 => nodePos(i).setY(NODE_TOP)
+  const nodePos = (i: number): THREE.Vector3 => (isle.spots[clamp(i, 0, isle.spots.length - 1)] ?? isle.at).clone()
+  const nodeTop = (i: number): THREE.Vector3 => nodePos(i).add(new THREE.Vector3(0, NODE_TOP, 0))
   const buildNodes = (count: number, done: boolean[]): void => {
     for (const n of nodes) nodeRoot.remove(n)
     nodes = []
@@ -597,7 +709,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       const g = buildNode(!!done[i], base)
       nodes.push(g)
       nodeRoot.add(g)
-      g.position.copy(nodePos(i, count))
+      g.position.copy(nodePos(i))
     }
   }
   type ArrPhase = 'idle' | 'ball' | 'getup' | 'rush' | 'hop'
@@ -641,23 +753,33 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     }
     return x
   }
+  interface ArriveFrom { dir: THREE.Vector3; drop: number; reach: number; speed?: number }
+  /**
+   * The throw onto the island: in from the mainland's side (or the way the
+   * island says — the vault's is low and through its door), at speed, to
+   * come to rest a few steps from the stone it is bound for, inside the coast.
+   */
   const startArrival = (target: number, t: number): void => {
     const tp = nodePos(target)
-    const th = Math.random() * TAU
-    const dir = new THREE.Vector3(Math.cos(th), 0, Math.sin(th))
-    // it comes to rest above the line of stones — further from the camera — so it has a walk ahead of it
-    // pulled back toward the middle of the path (the stones run x -27..27) so the
-    // roll finishes on screen instead of out past the first or the last stone
-    const rest = new THREE.Vector3(tp.x * 0.55 + (Math.random() - 0.5) * 10, 0, tp.z - (4.5 + Math.random() * 4))
-    const speed = 150
-    const drop = 16 + Math.random() * 12
-    const reach = 150
+    const from = isle.g.userData.arriveFrom as ArriveFrom | undefined
+    const th = Math.atan2(tp.z, tp.x) + (Math.random() - 0.5) * 0.9
+    const dir = from ? from.dir.clone().normalize() : new THREE.Vector3(Math.cos(th), 0, Math.sin(th))
+    let rest = tp.clone()
+    for (let k = 0; k < 12; k++) {
+      const a = Math.random() * TAU, d = 5 + Math.random() * 5
+      const c = tp.clone().add(new THREE.Vector3(Math.cos(a) * d, 0, Math.sin(a) * d))
+      if (isle.inside(c.x, c.z)) { rest = c; break }
+    }
+    const speed = from?.speed ?? 150
+    const drop = from ? from.drop : 16 + Math.random() * 12
+    const reach = from?.reach ?? 150
     const tf = reach / speed
     const vy0 = (ballR() - drop + 0.5 * GRAV * tf * tf) / tf
     const fall = vy0 - GRAV * tf
     // where it must first hit for the bounces and the skid to end at `rest`
     const landing = rest.clone().addScaledVector(dir, -rollDistance(speed, fall))
-    const entry = landing.clone().addScaledVector(dir, -reach).setY(drop)
+    const entry = landing.clone().addScaledVector(dir, -reach)
+    entry.y = gY + drop
     arr.pos.copy(entry)
     arr.vel.copy(dir).multiplyScalar(speed)
     arr.vel.y = vy0
@@ -669,6 +791,8 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     skid.visible = false
     arr.phase = 'ball'
     arr.t0 = t
+    rig.root.visible = true
+    act = null
     cue('throw_far')
   }
   const startRush = (target: number, t: number): void => {
@@ -689,17 +813,18 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     }
     const sp = arr.vel.length()
     if (Math.random() < dt * (sp > 40 ? 24 : 8)) feathers.spawn(arr.pos, 1, t, new THREE.Vector3(0, 2, 0).addScaledVector(arr.vel, -0.12), 5)
-    if (arr.pos.y <= ballR()) {
-      arr.pos.y = ballR()
+    if (arr.pos.y <= gY + ballR()) {
+      arr.pos.y = gY + ballR()
       if (arr.vel.y < -6 || arr.bounces === 0) {
         arr.vel.y = Math.abs(arr.vel.y) * BOUNCE_UP
         arr.vel.x *= BOUNCE_RUN; arr.vel.z *= BOUNCE_RUN
         arr.ang.multiplyScalar(BOUNCE_SPIN)
         arr.bounces += 1
         cue('thud')
-        dust.spawn(new THREE.Vector3(arr.pos.x, 0.4, arr.pos.z), 7, t, new THREE.Vector3(0, 3, 0), 6)
+        drone.shake(0.25, 0.25)
+        dust.spawn(new THREE.Vector3(arr.pos.x, gY + 0.4, arr.pos.z), 7, t, new THREE.Vector3(0, 3, 0), 6)
         feathers.spawn(arr.pos, 4, t, new THREE.Vector3(0, 5, 0), 6)
-        if (!arr.skidFrom) { arr.skidFrom = arr.pos.clone().setY(0); skid.visible = true }
+        if (!arr.skidFrom) { arr.skidFrom = arr.pos.clone().setY(gY); skid.visible = true }
       } else {
         // on the ground: rolling, and slowing — and the grass under it flattened into a streak
         arr.vel.y = 0
@@ -708,7 +833,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
         if (hs > 1e-3) { arr.vel.x *= ns / hs; arr.vel.z *= ns / hs }
         if (ns > 0.5) arr.lastDir.set(arr.vel.x, 0, arr.vel.z).normalize()
         arr.ang.copy(UP).cross(arr.vel).divideScalar(ballR())
-        if (!arr.skidFrom) { arr.skidFrom = arr.pos.clone().setY(0); skid.visible = true }
+        if (!arr.skidFrom) { arr.skidFrom = arr.pos.clone().setY(gY); skid.visible = true }
         if (ns < ROLL_STOP) {
           arr.phase = 'getup'
           arr.t0 = t
@@ -724,7 +849,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       const a = arr.skidFrom, b = arr.pos
       const dx = b.x - a.x, dz = b.z - a.z
       const len = Math.max(0.5, Math.hypot(dx, dz))
-      skid.position.set((a.x + b.x) / 2, 0.08, (a.z + b.z) / 2)
+      skid.position.set((a.x + b.x) / 2, gY + 0.08, (a.z + b.z) / 2)
       skid.scale.set(len, 1, 1)
       skid.rotation.y = -Math.atan2(dz, dx)
     }
@@ -738,12 +863,12 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     const u = clamp01((t - arr.t0 - GETUP_REST) / 0.45)
     const target = new THREE.Quaternion().setFromAxisAngle(UP, arr.yawTarget)
     arr.quat.copy(arr.fromQuat).slerp(target, smooth(u))
-    arr.pos.y = ballR()
+    arr.pos.y = gY + ballR()
     placeBall(arr.pos, arr.quat, null, 1)
     want = clips.dizzy(t)
     if (u >= 1) {
       gyaw = arr.yawTarget
-      gpos.copy(arr.pos).setY(0)
+      gpos.copy(arr.pos).setY(gY)
       startRush(nodeSel, t)
     }
   }
@@ -767,7 +892,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     if (u >= 1) {
       arr.phase = 'idle'
       cue('land')
-      dust.spawn(gpos.clone().setY(NODE_TOP), 3, t, new THREE.Vector3(0, 1.5, 0), 3)
+      dust.spawn(gpos.clone(), 3, t, new THREE.Vector3(0, 1.5, 0), 3)
       nextAct = t + 1.6 + Math.random() * 2.5
       snapPose = true
       cur = clips.crouch()
@@ -812,6 +937,125 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       want = clips.idle(t, beat)
     }
     standRig()
+  }
+
+  // ── the flight to an island, and what happens on arrival ──────────────────
+  type Stage = 'fly' | 'arrive' | 'enter' | 'settled'
+  interface Travel { stage: Stage; until: number; thrown: boolean; resolvers: (() => void)[] }
+  let travel: Travel | null = null
+  const finishTravel = (t: number): void => {
+    const tv = travel!
+    tv.stage = 'settled'
+    if (!tv.thrown) { tv.thrown = true; startArrival(nodeSel, t) }
+    const rs = tv.resolvers
+    tv.resolvers = []
+    for (const r of rs) r()
+  }
+  const tickTravel = (t: number): void => {
+    const tv = travel
+    if (!tv) return
+    if (tv.stage === 'fly') {
+      // the eye is on the island as a whole until the mark is near, then on the shot
+      if (drone.remaining() < 90) drone.lookAt(isle.cam.look)
+      // thrown a beat before the drone gets there, so the landing is what it arrives on; a door waits to be opened first
+      if (!tv.thrown && !isle.arrive && drone.remaining() < 150) { tv.thrown = true; startArrival(nodeSel, t) }
+      if (drone.settled(4, 9)) {
+        if (isle.arrive) { tv.until = t + isle.arrive(t); tv.stage = 'arrive'; drone.shake(0.5, 0.35) }
+        else finishTravel(t)
+      }
+    } else if (tv.stage === 'arrive') {
+      if (t > tv.until) {
+        if (!tv.thrown) { tv.thrown = true; startArrival(nodeSel, t) }
+        if (isle.camIn) {
+          drone.fly(isle.camIn.pos, { cruise: 42, accel: 40, fov: isle.camIn.fov, sloppy: 1.5, hesitate: 0.4 })
+          drone.lookAt(isle.camIn.look)
+          tv.stage = 'enter'
+          cue('drone')
+        } else finishTravel(t)
+      }
+    } else if (tv.stage === 'enter') {
+      if (drone.settled(3, 5)) finishTravel(t)
+    }
+  }
+  /** the drone leaves for `isle`'s mark; the goose follows, thrown */
+  const flyTo = (resolve: () => void): void => {
+    rig.root.visible = false
+    arr.phase = 'idle'
+    act = null
+    skid.visible = false
+    // straight there: the marks all hang well above and outside the rock, so the line between them is clear
+    travel = { stage: 'fly', until: 0, thrown: false, resolvers: [resolve] }
+    drone.fly(isle.cam.pos, { cruise: 175, accel: 150, fov: isle.cam.fov, sloppy: 3, hesitate: 0.3 })
+    drone.lookAt(isle.at.clone().add(new THREE.Vector3(0, 14, 0)))
+    cue('drone')
+  }
+
+  // ── the chase: after the goose, through the cloud, over the islands ───────
+  type ChasePhase = 'watch' | 'turn' | 'go' | 'vista' | 'approach'
+  interface Chase { t0: number; phase: ChasePhase; phaseT0: number; seen: THREE.Vector3; f: THREE.Vector3; resolvers: (() => void)[]; cued: boolean }
+  let chase: Chase | null = null
+  /** the haze that hides the islands from the mainland, 0..1 */
+  let hazeK = 1
+  /** the middle of the hole in the cloud */
+  const THROUGH = new THREE.Vector3(WALL.x, HOLE.y + 7, HOLE.z)
+  const startChase = (t: number): void => {
+    chase = { t0: t, phase: 'watch', phaseT0: t, seen: gpos.clone(), f: facing(), resolvers: [], cued: false }
+    mode = 'chase'
+    setScale(MENU_SCALE)
+    hazeK = 1
+    // the drone takes the frame as the bird passes: its gimbal is slower than the bird, so it is left behind and swings after it
+    drone.cut(camera.position, look, camera.fov)
+    plates.forEach((pl, i) => { pl.g.visible = i === press!.plate })
+  }
+  const tickChase = (t: number, dt: number): void => {
+    const c = chase!, p = press!
+    const a = t - c.t0
+    // the launch goes on until the bird is through the cloud; the shell is told once the bird is well away
+    if (rig.root.visible) {
+      launchStep(p, a + 0.3, t, dt)
+      c.seen.copy(gpos)
+      if (gpos.x > WALL.x + 8) { rig.root.visible = false; plates[p.plate].g.visible = false; setScale(MAP_SCALE) }
+    }
+    if (!p.done && a >= 0.25) { p.done = true; p.resolve() }
+    if (c.phase === 'watch') {
+      // the pilot's eye follows the bird past and away
+      drone.lookAt(c.seen.clone().add(new THREE.Vector3(0, 1.5, 0)))
+      drone.setFov(66)
+      if (a > 0.55) {
+        c.phase = 'turn'; c.phaseT0 = t
+        // it settles to the bird's height and swings round to where it went: the hole in the cloud
+        drone.fly(new THREE.Vector3(drone.pos.x - 3, HOLE.y + 7, HOLE.z + 3), { cruise: 40, accel: 45, sloppy: 1.5, hesitate: 0.05 })
+        cue('drone')
+      }
+    } else if (c.phase === 'turn') {
+      drone.lookAt(THROUGH)
+      if (t - c.phaseT0 > 0.4) {
+        c.phase = 'go'; c.phaseT0 = t
+        // flat out, dead level, at the hole
+        drone.fly(new THREE.Vector3(WALL.x + 150, HOLE.y + 16, HOLE.z), { cruise: 260, accel: 150, sloppy: 2.5, hesitate: 0.1, fov: 60 })
+        drone.lookAt(new THREE.Vector3(WALL.x + 220, HOLE.y + 12, HOLE.z))
+      }
+    } else if (c.phase === 'go') {
+      if (!c.cued && drone.pos.x > WALL.x - 120) { c.cued = true; cue('cloud') }
+      if (drone.pos.x > WALL.x + 15) {
+        c.phase = 'vista'; c.phaseT0 = t
+        drone.fly(arch.vista.pos, { cruise: 150, accel: 120, sloppy: 3, fov: arch.vista.fov })
+        drone.lookAt(arch.vista.look)
+        cue('reveal')
+      }
+    } else if (c.phase === 'vista') {
+      const u = t - c.phaseT0
+      // the eye goes across the islands, then finds the one the goose is bound for
+      if (u > 0.7) drone.lookAt(isle.at.clone().add(new THREE.Vector3(0, 10, 0)))
+      if (u > 1.1) {
+        c.phase = 'approach'; c.phaseT0 = t
+        drone.fly(isle.cam.pos, { cruise: 175, accel: 150, sloppy: 3, fov: isle.cam.fov, hesitate: 0.1 })
+        drone.lookAt(isle.cam.look)
+        travel = { stage: 'fly', until: 0, thrown: false, resolvers: c.resolvers }
+        chase = null
+        mode = 'map'
+      }
+    }
   }
 
   // ── the abduction ─────────────────────────────────────────────────────────
@@ -998,6 +1242,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   // ── the frame ─────────────────────────────────────────────────────────────
   let raf = 0
   let lastT = now()
+  const focus = new THREE.Vector3()
   const tick = (): void => {
     raf = requestAnimationFrame(tick)
     const t = now()
@@ -1013,15 +1258,15 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       plates.forEach((p, i) => { p.g.position.y = p.pos.y + (i === goalPlate ? 0.4 : 0) })
     } else if (mode === 'press') {
       tickPress(t, dt, beat)
-    } else if (mode === 'tomap' || mode === 'map') {
-      const u = camStep(t)
-      if (mode === 'map') camera.position.x += Math.sin(t * 0.25) * 1.5
-      if (u >= 1 && mode === 'tomap') mode = 'map'
+    } else if (mode === 'chase') {
+      tickChase(t, dt)
+    } else if (mode === 'map') {
+      tickTravel(t)
       if (arr.phase === 'ball') tickBall(t, dt)
       else if (arr.phase === 'getup') tickGetup(t)
       else if (arr.phase === 'rush') tickRush(t, dt)
       else if (arr.phase === 'hop') tickHop(t)
-      else tickIdleOnStone(t, beat)
+      else if (rig.root.visible) tickIdleOnStone(t, beat)
       nodes.forEach((n, i) => {
         const top = n.userData.top as THREE.Mesh
         top.position.y = i === nodeSel && beat < 0.5 ? 1.6 : 1.3
@@ -1040,9 +1285,9 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     rig.setOutline(Math.max(0.08, Math.min(1.6, px * 1.15 / gooseScale)))
     if (hero.root.visible) hero.setOutline(Math.max(0.08, Math.min(1.6, pxAt(hero.root.position) * 1.1 / HERO_SCALE)))
 
-    nodeRoot.visible = mode === 'map' || mode === 'tomap' || mode === 'abduct'
+    nodeRoot.visible = mode === 'map' || mode === 'abduct' || mode === 'chase'
     skid.visible = skid.visible && nodeRoot.visible
-    menuRoot.visible = mode === 'menu' || mode === 'press'
+    menuRoot.visible = mode === 'menu' || mode === 'press' || mode === 'chase'
     hole.visible = hole.visible && mode === 'press'
     meadow.fence.visible = mode !== 'win'
     for (const c of meadow.clouds) c.visible = mode !== 'menu'
@@ -1051,11 +1296,62 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     feathers.update(t, dt)
     dust.update(t, dt)
     puffs.update(t, dt)
-    aim()
+
+    // the camera: the drone's out over the islands, the rails' everywhere else
+    const far = mode === 'chase' || mode === 'map' || mode === 'abduct'
+    const flown = far
+    if (flown) {
+      drone.update(t, dt)
+      drone.apply(camera)
+      // the light follows what the gimbal is actually pointed at, not where it was told to point, so shadows never jump
+      drone.forward(aimF)
+      look.copy(drone.pos).addScaledVector(aimF, Math.max(12, drone.pos.distanceTo(drone.lookGoal)))
+    } else aim()
+    // the light follows the frame, so the shadows are where the camera is
+    focus.copy(look)
+    sun.target.position.copy(focus)
+    sun.position.copy(focus).add(SUN_OFF)
+    if (far) {
+      arch.tick(t, dt, camera.position)
+      // the sky is whatever is near, lit by any lightning
+      const pal = arch.palette(camera.position, WORLDS[0])
+      const fl = arch.flash(camera.position)
+      ;(scene.background as THREE.Color).setHex(mixHex(pal[0], 0xffffff, fl * 0.6))
+      ;(scene.fog as THREE.Fog).color.setHex(mixHex(pal[1], 0xffffff, fl * 0.6))
+      hemi.color.setHex(pal[2])
+      sun.color.setHex(pal[3])
+      hemi.intensity = 1.1 + fl * 2.5
+      // haze hides the islands from the mainland; it lifts as the drone nears the wall, so they show through the hole first
+      const hazeWant = clamp01((WALL.x - 70 - camera.position.x) / 130)
+      hazeK += (hazeWant - hazeK) * (1 - Math.exp(-dt * 4))
+      ;(scene.fog as THREE.Fog).near = lerp(FAR_NEAR, 120, hazeK)
+      ;(scene.fog as THREE.Fog).far = lerp(FAR_FAR, 430, hazeK)
+    }
     renderer.render(scene, camera)
+    // the smear: only at speed, and the more the faster
+    const smear = far ? clamp01((drone.speed() - 150) / 150) * 0.62 : 0
+    if (smear > 0.01) {
+      ghostMat.opacity = smear
+      ghost.scale.setScalar(1 + smear * 0.07)
+      renderer.autoClear = false
+      renderer.render(ghostScene, ghostCam)
+      renderer.autoClear = true
+    }
+    if (ghostTex) renderer.copyFramebufferToTexture(ghostTex)
   }
   raf = requestAnimationFrame(tick)
+  // the probes read the frame's cost and where the movie is
+  ;(window as unknown as { __movieInfo: () => unknown }).__movieInfo = () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, mode, island: isle.id, cam: camera.position.toArray().map((v) => Math.round(v)) })
 
+  /** the meadow's own light and fog, for the title and the win show */
+  const homeSky = (dusk: boolean): void => {
+    setSky(dusk)
+    ;(scene.fog as THREE.Fog).near = FOG_NEAR
+    ;(scene.fog as THREE.Fog).far = FOG_FAR
+    hemi.intensity = 1.1
+    feathers.floor = dust.floor = puffs.floor = 0.15
+    isle.leave?.()
+  }
   /** everything off the set but the goose */
   const clearSet = (): void => {
     hero.root.visible = false
@@ -1076,6 +1372,8 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     abd = null
     air = null
     pointer = null
+    chase = null
+    travel = null
   }
 
   return {
@@ -1083,21 +1381,24 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     resize,
     get onCue() { return onCue },
     set onCue(fn) { onCue = fn },
+    worlds: arch.islands.length,
+    worldName: (k) => arch.islands[((k % arch.islands.length) + arch.islands.length) % arch.islands.length].name,
     menu: (count, at) => {
       clearSet()
       setScale(MENU_SCALE)
       skid.visible = false
       if (plates.length !== count) layoutPlates(count)
-      for (const p of plates) { p.g.position.copy(p.pos); p.g.rotation.set(0, 0, 0) }
+      for (const p of plates) { p.g.position.copy(p.pos); p.g.rotation.set(0, 0, 0); p.g.visible = true }
       standPlate = goalPlate = Math.max(0, Math.min(count - 1, at))
       goal.copy(standSpot(goalPlate))
       gpos.copy(goal)
       gyaw = -0.35
       arr.phase = 'idle'
       worldK = 0
-      setSky(false)
-      const first = mode === 'hold'
-      if (first) { camera.position.copy(MENU_CAM).add(new THREE.Vector3(0, 30, 24)); look.copy(MENU_LOOK) }
+      homeSky(false)
+      // from nowhere, or from out over the islands: drop in from above rather than smear across the sky
+      const first = mode === 'hold' || camera.position.distanceTo(MENU_CAM) > 250
+      if (first) { camera.position.copy(MENU_CAM).add(new THREE.Vector3(0, 30, 24)); look.copy(MENU_LOOK); camera.fov = MENU_FOV }
       glide(MENU_CAM, MENU_LOOK, first ? 0.9 : 0.7, MENU_FOV)
       mode = 'menu'
       cur = clips.idle(0, 0)
@@ -1150,42 +1451,67 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       }
       mode = 'press'
     }),
-    map: (count, selected, done, arrive = false) => {
+    map: (count, selected, done, arrive = false, world = 0) => new Promise<void>((resolve) => {
+      const k = ((world % arch.islands.length) + arch.islands.length) % arch.islands.length
+      const dest = arch.islands[k]
+      worldK = k
+      if (mode === 'chase') {
+        // mid-flight: the chase lands on this island (the bird is scaled down once it is out of sight)
+        setIsle(k)
+        buildNodes(count, done)
+        nodeSel = clamp(selected, 0, count - 1)
+        chase!.resolvers.push(resolve)
+        return
+      }
+      if (mode === 'map') {
+        if (dest !== isle) {
+          setIsle(k)
+          buildNodes(count, done)
+          nodeSel = clamp(selected, 0, count - 1)
+          flyTo(resolve)
+          return
+        }
+        buildNodes(count, done)
+        nodeSel = clamp(selected, 0, count - 1)
+        if (travel && travel.stage !== 'settled') { travel.resolvers.push(resolve); return }
+        if (arrive) startArrival(nodeSel, now())
+        else if (arr.phase === 'idle') { rig.root.visible = true; gpos.copy(nodeTop(nodeSel)); standRig() }
+        resolve()
+        return
+      }
+      // from anywhere else: a cut to the island
       clearSet()
       setScale(MAP_SCALE)
+      setIsle(k)
       buildNodes(count, done)
-      nodeSel = Math.max(0, Math.min(count - 1, selected))
-      setSky(false)
+      nodeSel = clamp(selected, 0, count - 1)
+      drone.cut(dest.cam.pos, dest.cam.look, dest.cam.fov)
+      mode = 'map'
       const t = now()
-      if (mode !== 'map' && mode !== 'tomap') {
-        glide(MAP_CAM, MAP_LOOK, 0.8, 38)
-        mode = 'tomap'
-      }
-      if (arrive) startArrival(nodeSel, t)
-      else {
-        arr.phase = 'idle'
-        act = null
-        nextAct = t + 2 + Math.random() * 3
-        gpos.copy(nodeTop(nodeSel))
-        standRig()
-      }
-    },
+      rig.root.visible = false
+      arr.phase = 'idle'
+      act = null
+      skid.visible = false
+      travel = { stage: 'fly', until: 0, thrown: !arrive, resolvers: [resolve] }
+      if (!arrive) { rig.root.visible = true; gpos.copy(nodeTop(nodeSel)); gyaw = -0.35; nextAct = t + 2 + Math.random() * 3; standRig() }
+    }),
     gooseTo: (i) => {
       if (i < 0 || i >= nodes.length) return
       nodeSel = i
-      if (arr.phase === 'ball' || arr.phase === 'getup') return
+      if (!rig.root.visible || arr.phase === 'ball' || arr.phase === 'getup') return
       act = null
-      gpos.setY(0)
+      gpos.setY(gY)
       startRush(i, now())
     },
     project: (i) => {
       const p = nodePos(i).add(new THREE.Vector3(0, 1.7, 0)).project(camera)
       return [Math.round(((p.x + 1) / 2) * w), Math.round(((1 - p.y) / 2) * h)]
     },
-    setWorld: (k) => { worldK = k; if (mode !== 'win') setSky(false) },
+    setWorld: (k) => { worldK = k },
     abduct: () => new Promise<void>((resolve) => {
-      if (mode !== 'map' && mode !== 'tomap') { resolve(); return }
+      if (mode !== 'map') { resolve(); return }
       act = null
+      rig.root.visible = true
       if (arr.phase !== 'idle') { arr.phase = 'idle'; gpos.copy(nodeTop(nodeSel)) }
       const f = facing(), p = perp()
       abd = {
@@ -1204,7 +1530,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       winCutsDone = -1
       const names: PoseName[] = ['rohan', 'dio', 'giorno']
       winPose = names[Math.abs(seed) % names.length]
-      setSky(true)
+      homeSky(true)
       gpos.set(0, 0, 0)
       gyaw = -0.35
       hero.root.position.set(0, 0, 0)

@@ -105,6 +105,10 @@ const CUES: Record<string, [string, number]> = {
   crash_zoom: ['crash_zoom', 0.7], trap: ['whoosh', 0.6], thud: ['thud', 0.6], honk: ['honk', 0.45],
   slap: ['slap', 0.7], splat: ['splat', 0.6], throw_far: ['throw_far', 0.6],
   beam: ['windup', 0.5], ufo: ['whoosh', 0.6], menace: ['menace', 0.6],
+  // the chase, and the islands
+  drone: ['whoosh', 0.45], cloud: ['whoosh', 0.35], reveal: ['shift_go', 0.6],
+  coconut: ['thud', 0.25], hammer: ['thud', 0.22], thunder: ['boom', 0.55],
+  lock_tick: ['shift_tick', 0.6], lock_bolt: ['slide', 0.5], lock_open: ['boom', 0.5], door_thud: ['thud', 0.7],
 }
 function getMovie(): Promise<GooseMovie> {
   moviePromise ??= loadManifest().then((m) => gooseMovie(m)).then((mv) => {
@@ -302,16 +306,18 @@ function showMenu(built: { el: HTMLElement; stop: () => void }): void {
 
 /** `intro` opens the session: black, the pickup, the wordmark typed onto the drop */
 function renderTitle(intro = false): void {
-  showMenu(buildTitle({
+  const built = buildTitle({
     onPlay: () => { titleAt = 0; renderMenu() },
     onImport: () => { titleAt = 1; openImport(renderTitle) },
-    onSettings: () => { titleAt = 2; openSettings(renderTitle) },
+    // the panel comes up over the title, which stays where it is underneath
+    onSettings: () => { titleAt = 2; click(); openSettings(() => built.resume()) },
     onMove: () => ui('ui_move', 0.5),
     movie: getMovie(),
     at: titleAt,
     music: themeClock,
     intro,
-  }))
+  })
+  showMenu(built)
   ensureTheme()
 }
 

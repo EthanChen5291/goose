@@ -107,7 +107,9 @@ interface Grain { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; bor
 export class Bits {
   private grains: Grain[] = []
   constructor(scene: THREE.Scene, geo: THREE.BufferGeometry, color: number, n: number,
-              private gravity: number, private drag: number, private life: number, private flutter: number) {
+              private gravity: number, private drag: number, private life: number, private flutter: number,
+              /** the ground the bits come to rest on (the meadow's, unless told otherwise) */
+              public floor = 0.15) {
     const mat = new THREE.MeshBasicMaterial({ color })
     for (let i = 0; i < n; i++) {
       const m = new THREE.Mesh(geo, mat)
@@ -145,7 +147,7 @@ export class Bits {
       g.mesh.rotation.x += g.spin.x * dt
       g.mesh.rotation.y += g.spin.y * dt
       g.mesh.rotation.z += g.spin.z * dt
-      if (g.mesh.position.y < 0.15) { g.mesh.position.y = 0.15; g.vel.set(0, 0, 0); g.spin.set(0, 0, 0) }
+      if (g.mesh.position.y < this.floor) { g.mesh.position.y = this.floor; g.vel.set(0, 0, 0); g.spin.set(0, 0, 0) }
       // dust shrinks in two steps; feathers do not
       if (this.flutter === 0) g.mesh.scale.setScalar(age > this.life * 0.66 ? 0.45 : age > this.life * 0.33 ? 0.75 : 1)
     }

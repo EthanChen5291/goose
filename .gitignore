@@ -25,3 +25,6 @@ web/.scratch/
 # node, wherever it lands (web/.gitignore covers the client's derived assets)
 node_modules/
 web/dist/
+
+# secrets
+.env

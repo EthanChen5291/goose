@@ -16,6 +16,7 @@
  * the chrome fades (`flyOut`) while the movie plays the abduction.
  */
 import { pixelStage, loadManifest } from './pxchrome'
+import { installKit } from './ui_kit'
 import type { PxStage } from './pxchrome'
 import type { Manifest } from '../px/assets'
 import { levelFor } from '../px/levels'
@@ -60,10 +61,10 @@ export interface SelectScreen {
 }
 
 const PER_WORLD = 6
-const WORLD_NAMES = ['GOOSE MEADOW', 'DUSK HILLS', 'NIGHT RUINS', 'STORM FLATS', 'DAWN STEPS', 'FAR MEADOW', 'HIGH PASS', 'LAST LIGHT']
 const fmtTime = (s: number): string => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`
 
 export function buildSelect(opts: SelectOptions): SelectScreen {
+  installKit()
   const px = pixelStage()
   const { stage } = px
   px.root.classList.add('map-root')
@@ -72,9 +73,23 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
   let tier = opts.tier
   let mode = opts.mode
   let selIdx = Math.max(0, songs.findIndex((s) => s.id === opts.selectedId))
-  let page = Math.floor(selIdx / PER_WORLD)
-  const pages = Math.max(1, Math.ceil(songs.length / PER_WORLD))
-  const pageSongs = (): SelectSong[] => songs.slice(page * PER_WORLD, page * PER_WORLD + PER_WORLD)
+  /**
+   * The pages: at most six stones to an island, and — once there are songs
+   * enough — every island gets some, so the vault is not left with nothing in it.
+   */
+  let sizes: number[] = [Math.max(1, songs.length)]
+  const layoutPages = (worlds: number): void => {
+    const n = songs.length
+    let pages = Math.max(1, Math.ceil(n / PER_WORLD))
+    if (n >= worlds * 2) pages = Math.max(pages, worlds)
+    const base = Math.floor(n / pages), extra = n % pages
+    sizes = Array.from({ length: pages }, (_, i) => base + (i < extra ? 1 : 0))
+  }
+  const pageStart = (p: number): number => sizes.slice(0, p).reduce((a, b) => a + b, 0)
+  const pageOf = (gi: number): number => { let p = 0; while (p + 1 < sizes.length && gi >= pageStart(p + 1)) p += 1; return p }
+  let page = 0
+  const pages = (): number => sizes.length
+  const pageSongs = (): SelectSong[] => songs.slice(pageStart(page), pageStart(page) + sizes[page])
   const cleared = (s: SelectSong): boolean => {
     for (const t of opts.tiers) for (const m of opts.modes) { const b = opts.bestOf(s, t.key, m.key); if (b && b.accuracy >= 70) return true }
     return false
@@ -82,15 +97,15 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
 
   // ── chrome ─────────────────────────────────────────────────────────────
   const dim = document.createElement('div'); dim.className = 'map-dim'
-  const back = document.createElement('button'); back.className = 'map-back'; back.textContent = '‹'; back.setAttribute('aria-label', 'Back')
+  const back = document.createElement('button'); back.className = 'kit-ic kit-ic-back map-back'; back.setAttribute('aria-label', 'Back to the title'); back.title = 'back'
   back.onclick = () => { opts.sfx('ui_click'); opts.onBack() }
   const world = document.createElement('div'); world.className = 'map-world'
-  const left = document.createElement('button'); left.className = 'map-arrow map-arrow-l'; left.textContent = '◂'; left.setAttribute('aria-label', 'Previous world')
-  const right = document.createElement('button'); right.className = 'map-arrow map-arrow-r'; right.textContent = '▸'; right.setAttribute('aria-label', 'Next world')
+  const left = document.createElement('button'); left.className = 'kit-ic kit-ic-left map-arrow map-arrow-l'; left.setAttribute('aria-label', 'Previous island'); left.title = 'previous island'
+  const right = document.createElement('button'); right.className = 'kit-ic kit-ic-right map-arrow map-arrow-r'; right.setAttribute('aria-label', 'Next island'); right.title = 'next island'
   const dots = document.createElement('div'); dots.className = 'map-dots'
   const nodesEl = document.createElement('div'); nodesEl.className = 'map-nodes'
   const hint = document.createElement('div'); hint.className = 'map-hint'; hint.textContent = '← → level · ↑ ↓ world · enter'
-  const add = document.createElement('button'); add.className = 'map-add'; add.textContent = '+'; add.title = 'add a song'
+  const add = document.createElement('button'); add.className = 'kit-ic kit-ic-plus map-add'; add.setAttribute('aria-label', 'Add a song'); add.title = 'add a song'
   add.onclick = () => { opts.sfx('ui_click'); opts.onUpload() }
 
   // ── the card ────────────────────────────────────────────────────────────
@@ -145,46 +160,57 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
   // ── the nodes on the map ───────────────────────────────────────────────
   let movie: GooseMovie | null = null
   let arriveNext = opts.arrive ?? false
+  /** true once the drone is over the island: until then the map is a flight, not a menu */
+  let ready = false
   const nodeEls: HTMLButtonElement[] = []
   const paintNodes = (): void => {
     nodesEl.replaceChildren()
     nodeEls.length = 0
     const ps = pageSongs()
     ps.forEach((s, i) => {
-      const gi = page * PER_WORLD + i
+      const gi = pageStart(page) + i
       const b = document.createElement('button')
       b.className = 'map-node song' + (gi === selIdx ? ' on' : '') + (cleared(s) ? ' done' : '') + (s.custom ? ' mine' : '')
       b.dataset.title = s.title
       b.setAttribute('aria-label', `level ${gi + 1}: ${s.title}`)
       const best = opts.bestOf(s, tier, mode)
       b.innerHTML = `<b>${gi + 1}</b>${best ? `<i>${best.grade[0]}</i>` : ''}`
-      b.onclick = () => { if (gi === selIdx) openCard(); else select(gi) }
+      b.onclick = () => { if (!ready) return; if (gi === selIdx) openCard(); else select(gi) }
       nodeEls.push(b)
       nodesEl.appendChild(b)
     })
-    world.textContent = WORLD_NAMES[page % WORLD_NAMES.length]
+    world.textContent = movie?.worldName(page) ?? ''
     dots.replaceChildren()
-    for (let i = 0; i < pages; i++) { const d = document.createElement('span'); d.className = i === page ? 'on' : ''; dots.appendChild(d) }
-    movie?.map(ps.length, selIdx - page * PER_WORLD, ps.map(cleared), arriveNext)
+    for (let i = 0; i < pages(); i++) { const d = document.createElement('span'); d.className = i === page ? 'on' : ''; dots.appendChild(d) }
+    // the drone flies to the island (or is already on its way there, after PLAY): the chrome waits for it
     movie?.setWorld(page)
+    const thisPage = page
+    ready = false
+    px.root.classList.remove('in')
+    void movie?.map(ps.length, selIdx - pageStart(page), ps.map(cleared), arriveNext, page).then(() => {
+      if (!alive || page !== thisPage) return
+      ready = true
+      px.root.classList.add('in')
+    })
     arriveNext = false
   }
   const select = (gi: number): void => {
     if (gi < 0 || gi >= songs.length) return
-    const np = Math.floor(gi / PER_WORLD)
+    const np = pageOf(gi)
     selIdx = gi
     opts.onSelect(songs[gi])
     opts.sfx('ui_move')
     if (np !== page) { page = np; closeCard(); paintNodes(); return }
-    nodeEls.forEach((b, i) => b.classList.toggle('on', page * PER_WORLD + i === selIdx))
-    movie?.gooseTo(selIdx - page * PER_WORLD)
+    nodeEls.forEach((b, i) => b.classList.toggle('on', pageStart(page) + i === selIdx))
+    movie?.gooseTo(selIdx - pageStart(page))
     if (cardOpen) paintCard()
   }
   const turn = (d: number): void => {
-    const np = ((page + d) % pages + pages) % pages
+    if (!ready) return
+    const np = ((page + d) % pages() + pages()) % pages()
     if (np === page) return
     page = np
-    selIdx = page * PER_WORLD
+    selIdx = pageStart(page)
     opts.onSelect(songs[selIdx])
     opts.sfx('ui_move')
     closeCard()
@@ -201,6 +227,8 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
     if (!alive) return
     movie = mv
     manifest = m
+    layoutPages(mv.worlds)
+    page = pageOf(selIdx)
     stage.prepend(mv.el)
     mv.resize(px.w, px.h)
     paintNodes()
@@ -225,8 +253,8 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
     dim.style.left = '0'; dim.style.top = '0'; dim.style.width = `${w}px`; dim.style.height = `${h}px`
     nodesEl.style.left = '0'; nodesEl.style.top = '0'; nodesEl.style.width = `${w}px`; nodesEl.style.height = `${h}px`
     world.style.left = '0'; world.style.width = `${w}px`; world.style.top = '10px'
-    left.style.left = '6px'; left.style.top = `${Math.round(h / 2) - 8}px`
-    right.style.right = '6px'; right.style.top = `${Math.round(h / 2) - 8}px`
+    left.style.left = '6px'; left.style.top = `${Math.round(h / 2) - 10}px`
+    right.style.right = '6px'; right.style.top = `${Math.round(h / 2) - 10}px`
     dots.style.left = '0'; dots.style.width = `${w}px`; dots.style.top = `${h - 14}px`
     hint.style.left = '0'; hint.style.width = `${w}px`; hint.style.top = `${h - 24}px`
     add.style.right = '6px'; add.style.top = '6px'
@@ -239,6 +267,8 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
   let flying = false
   const onKey = (e: KeyboardEvent): void => {
     if (flying) return
+    // in flight, only Escape does anything: back to the title
+    if (!ready) { if (e.key === 'Escape') { opts.sfx('ui_click'); opts.onBack() } return }
     if (e.key === 'ArrowRight') { e.preventDefault(); if (selIdx + 1 < songs.length) select(selIdx + 1) }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); if (selIdx > 0) select(selIdx - 1) }
     else if (e.key === 'ArrowUp') { e.preventDefault(); turn(1) }
@@ -255,8 +285,6 @@ export function buildSelect(opts: SelectOptions): SelectScreen {
   card.addEventListener('click', (e) => e.stopPropagation())
   dim.onclick = () => closeCard()
 
-  // the arrival: everything fades and slides in while the camera flies up
-  requestAnimationFrame(() => px.root.classList.add('in'))
   opts.sfx('ui_move')
 
   return {

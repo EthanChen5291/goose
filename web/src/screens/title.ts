@@ -34,7 +34,7 @@ export interface TitleOptions {
 
 export interface TitleItem { label: string; cls: string; kind: ExitKind; go: () => void }
 
-export function buildTitle(opts: TitleOptions): { el: HTMLElement; stop: () => void } {
+export function buildTitle(opts: TitleOptions): { el: HTMLElement; stop: () => void; resume: () => void } {
   const px = pixelStage()
   const { stage } = px
   px.root.classList.add('title-root')
@@ -90,6 +90,9 @@ export function buildTitle(opts: TitleOptions): { el: HTMLElement; stop: () => v
     pressing = true
     cur = i
     paint()
+    // SETTINGS is not a journey: no phone, no trapdoor — the panel just comes up
+    // over the meadow, and `resume` hands the menu back when it closes
+    if (items[i].kind === 'trap') { items[i].go(); return }
     layer.classList.add('pressing')
     const mv = await opts.movie
     if (!alive) return
@@ -232,5 +235,6 @@ export function buildTitle(opts: TitleOptions): { el: HTMLElement; stop: () => v
   return {
     el: px.root,
     stop: () => { alive = false; for (const s of stops) s() },
+    resume: () => { pressing = false; layer.classList.remove('pressing') },
   }
 }
