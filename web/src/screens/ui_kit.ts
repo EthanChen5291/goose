@@ -48,12 +48,19 @@ function roundMask(w: number, h: number, r: number): Grid {
   return g
 }
 
-export interface BoxStyle { face: string; hi: string; lo: string; ink?: string; shadow?: number; r?: number }
+export interface BoxStyle {
+  face: string; hi: string; lo: string
+  /** the frame band inside the outline: its width and colours (none = a plain box) */
+  frame?: { w: number; face: string; hi: string; lo: string }
+  ink?: string; shadow?: number; r?: number
+}
 
 /**
- * Paint a shaded box of `w`×`h` at (`ox`,`oy`) on `ctx`: shadow, outline, face,
- * one pixel of highlight on the top/left, one of shade on the right and two
- * along the bottom.
+ * Paint a shaded box of `w`×`h` at (`ox`,`oy`) on `ctx`, from the outside in:
+ * the drop shadow, the ink outline, a frame band (lit on the top and left,
+ * dark on the right and bottom, so the panel reads as a slab with an edge),
+ * then the face with one pixel of highlight up the top and left and a shade
+ * down the right that doubles along the bottom.
  */
 export function paintBox(ctx: CanvasRenderingContext2D, ox: number, oy: number, w: number, h: number, s: BoxStyle): void {
   const r = s.r ?? 5
@@ -62,17 +69,37 @@ export function paintBox(ctx: CanvasRenderingContext2D, ox: number, oy: number, 
   const put = (x: number, y: number, c: string): void => { ctx.fillStyle = c; ctx.fillRect(ox + x, oy + y, 1, 1) }
   const sh = s.shadow ?? 2
   if (sh > 0) for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (m[y][x] && !on(x, y - sh)) put(x, y + sh, KIT.shadow)
+  // how deep each cell is: peeled a ring at a time
+  const level: number[][] = m.map((row) => row.map((v) => (v ? -1 : -2)))
+  let ring = m.map((row) => row.slice())
+  for (let L = 0; ; L++) {
+    let any = false
+    const next = ring.map((row) => row.slice())
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (!ring[y][x]) continue
+      const edge = !(x > 0 && ring[y][x - 1]) || !(x < w - 1 && ring[y][x + 1]) || !(y > 0 && ring[y - 1][x]) || !(y < h - 1 && ring[y + 1][x])
+      if (edge) { level[y][x] = L; next[y][x] = false; any = true }
+    }
+    ring = next
+    if (!any) break
+  }
+  // which way is out: the shade goes on the side nearer the bottom and right
+  const steps = (x: number, y: number, dx: number, dy: number): number => { let n = 0; while (on(x + dx * (n + 1), y + dy * (n + 1))) n++; return n }
+  const fw = s.frame?.w ?? 0
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     if (!m[y][x]) continue
-    const edge = !on(x - 1, y) || !on(x + 1, y) || !on(x, y - 1) || !on(x, y + 1)
-    if (edge) { put(x, y, s.ink ?? KIT.ink); continue }
-    // the bevel: what the outline is next to
-    const upEdge = !on(x, y - 2) || !on(x - 1, y - 1) || !on(x + 1, y - 1)
-    const leftEdge = !on(x - 2, y) || !on(x - 1, y - 1) || !on(x - 1, y + 1)
-    const downEdge = !on(x, y + 2) || !on(x, y + 3) || !on(x - 1, y + 2) || !on(x + 1, y + 2)
-    const rightEdge = !on(x + 2, y) || !on(x + 1, y + 1) || !on(x + 1, y - 1)
-    if (downEdge || rightEdge) put(x, y, s.lo)
-    else if (upEdge || leftEdge) put(x, y, s.hi)
+    const L = level[y][x]
+    if (L === 0) { put(x, y, s.ink ?? KIT.ink); continue }
+    const down = steps(x, y, 0, 1), right = steps(x, y, 1, 0), up = steps(x, y, 0, -1), left = steps(x, y, -1, 0)
+    const lo = Math.min(down, right) < Math.min(up, left)
+    if (s.frame && L <= fw) {
+      // a glint along the top-left of the band, the dark side along the bottom-right
+      put(x, y, lo ? (L === fw ? s.frame.lo : s.frame.lo) : L === 1 ? s.frame.hi : s.frame.face)
+      continue
+    }
+    const inner = L - fw
+    if (inner === 1) put(x, y, lo ? s.lo : s.hi)
+    else if (inner === 2 && down < Math.min(up, left, right + 1)) put(x, y, s.lo)
     else put(x, y, s.face)
   }
 }
@@ -87,7 +114,7 @@ function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContex
 
 /** a box as a border-image source: `pad` transparent pixels around it hold the shadow */
 function boxImage(size: number, s: BoxStyle): string {
-  const pad = 2
+  const pad = Math.max(2, s.shadow ?? 2)
   const [c, ctx] = canvas(size + pad * 2, size + pad * 2)
   paintBox(ctx, pad, pad, size, size, s)
   return `url(${c.toDataURL()})`
@@ -130,11 +157,13 @@ export function installKit(): void {
   if (installed) return
   installed = true
   const root = document.documentElement.style
-  const cream: BoxStyle = { face: KIT.cream, hi: KIT.creamHi, lo: KIT.creamLo }
-  const lav: BoxStyle = { face: KIT.lav, hi: KIT.lavHi, lo: KIT.lavLo }
-  const purple: BoxStyle = { face: KIT.purple, hi: KIT.purpleHi, lo: KIT.purpleLo }
-  root.setProperty('--kit-panel', boxImage(20, { ...cream, r: 6 }))
-  root.setProperty('--kit-panel-lav', boxImage(20, { ...lav, r: 6 }))
+  const lavBand = { w: 1, face: KIT.lav, hi: KIT.lavHi, lo: KIT.lavLo }
+  const cream: BoxStyle = { face: KIT.cream, hi: KIT.creamHi, lo: KIT.creamLo, frame: lavBand }
+  const lav: BoxStyle = { face: KIT.lav, hi: KIT.lavHi, lo: KIT.lavLo, frame: { w: 1, face: KIT.lavLo, hi: KIT.lavHi, lo: KIT.purpleLo } }
+  const purple: BoxStyle = { face: KIT.purple, hi: KIT.purpleHi, lo: KIT.purpleLo, frame: { w: 1, face: KIT.purpleLo, hi: KIT.purpleHi, lo: '#4d3270' } }
+  // the panel: a three-pixel lavender frame round the cream, standing on a three-pixel shadow
+  root.setProperty('--kit-panel', boxImage(28, { ...cream, r: 7, shadow: 3, frame: { w: 3, face: KIT.lav, hi: KIT.lavHi, lo: KIT.lavLo } }))
+  root.setProperty('--kit-panel-lav', boxImage(28, { ...lav, r: 7, shadow: 3, frame: { w: 3, face: KIT.lavLo, hi: KIT.lavHi, lo: KIT.purpleLo } }))
   root.setProperty('--kit-btn', boxImage(16, cream))
   root.setProperty('--kit-btn-lav', boxImage(16, lav))
   root.setProperty('--kit-btn-purple', boxImage(16, purple))

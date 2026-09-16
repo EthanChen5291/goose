@@ -15,7 +15,7 @@ import { Bits } from './goose_fx'
 import {
   CELL, OCEAN_Y, Kit, CellField, blob, buildGround, arcSpots, walkway, rockUnder, clamp, clamp01, lerp,
 } from './island_kit'
-import type { BiomeCtx, CamPose, Ground, Palette, Outline } from './island_kit'
+import type { BiomeCtx, CamPose, Ground, Palette, Outline, Landing } from './island_kit'
 
 export interface Built {
   outline: Outline
@@ -25,8 +25,12 @@ export interface Built {
   camIn?: CamPose
   arrive?: (t: number) => number
   leave?: () => void
-  /** where the thrown goose comes in from (a direction, island-relative) and how high; the default is from the mainland, high */
-  arriveFrom?: { dir: THREE.Vector3; drop: number; reach: number }
+  /** where the thrown goose comes in from (a direction, island-relative) and how high; the default is from the mainland, high.
+   *  `lane` keeps the rest point within that distance of the line through the target, so the throw fits through a door */
+  arriveFrom?: { dir: THREE.Vector3; drop: number; reach: number; lane?: number }
+  land?: Landing
+  /** island-relative walls: pushes `pos` out and reflects `vel`, true if it did */
+  collide?: (pos: THREE.Vector3, vel: THREE.Vector3, r: number) => boolean
 }
 export interface Biome {
   id: string
@@ -68,11 +72,11 @@ function flower(kit: Kit, color: number): THREE.Group {
 /** a scatter of `n` positions on the ground, `margin` in from the coast, not on the walkway */
 /** tall things stay behind the walkway (the drone looks in from +z), so they never stand between the lens and a stone */
 const BEHIND = 5
-function scatter(ctx: BiomeCtx, inside: (x: number, z: number) => number, n: number, margin: number, avoid: THREE.Vector3[], keep = 6, zMax = 1e9): [number, number][] {
+function scatter(ctx: BiomeCtx, inside: (x: number, z: number) => number, n: number, margin: number, avoid: THREE.Vector3[], keep = 6, zMax = 1e9, zMin = -1e9): [number, number][] {
   const out: [number, number][] = []
   for (let k = 0; k < n * 12 && out.length < n; k++) {
     const x = (ctx.r() - 0.5) * ctx.size * 2.4, z = (ctx.r() - 0.5) * ctx.size * 2.4
-    if (z > zMax) continue
+    if (z > zMax || z < zMin) continue
     if (inside(x, z) < margin) continue
     if (avoid.some((p) => Math.hypot(p.x - x, p.z - z) < keep)) continue
     out.push([x, z])
@@ -224,7 +228,7 @@ const meadow: Biome = {
       splash.update(t, dt)
     })
     sunShafts(ctx, 5, 60)
-    return { ground, spots, outline: o, cam: { pos: v3(0, 42, 54), look: v3(0, 0, 4), fov: 38 } }
+    return { ground, spots, outline: o, cam: { pos: v3(0, 42, 54), look: v3(0, 0, 4), fov: 38 }, land: { skid: 0x55702c, width: 1.1, wobble: 0.2, drag: 32, bounce: 0.36, bits: 0xc9c2a8, spray: 1 } }
   },
 }
 function segDist(a: THREE.Vector3, b: THREE.Vector3, x: number, z: number): number {
@@ -401,7 +405,7 @@ const cove: Biome = {
       surf.commit()
       spray.update(t, dt)
     })
-    return { ground, spots, outline: o, cam: { pos: v3(-8, 36, 62), look: v3(0, 0, 6), fov: 40 }, arriveFrom: { dir: v3(1, 0, 0.3).normalize(), drop: 26, reach: 120 } }
+    return { ground, spots, outline: o, cam: { pos: v3(-8, 36, 62), look: v3(0, 0, 6), fov: 40 }, arriveFrom: { dir: v3(1, 0, 0.3).normalize(), drop: 26, reach: 120 }, land: { skid: 0xd9c48c, width: 1.6, wobble: 0.5, drag: 46, bounce: 0.2, bits: 0xf2e2b0, spray: 0.8 } }
   },
 }
 /** a coconut palm: a leaning stack of trunk blocks, fronds radiating from the crown, coconuts under them */
@@ -632,7 +636,27 @@ const vault: Biome = {
         hubLight.material = kit.glowMat(0xff3d5a)
         strips.forEach((s) => { s.material = kit.glowMat(0x1e5f6e) })
       },
-      arriveFrom: { dir: v3(1, 0, 0), drop: 5, reach: 70 },
+      arriveFrom: { dir: v3(1, 0, 0), drop: 5, reach: 70, lane: 8 },
+      land: { skid: 0x4a5262, width: 0.8, wobble: 0.04, drag: 16, bounce: 0.5, bits: 0xffd35a, spray: 1.8 },
+      // the building's walls and roof, from inside or out; the doorway is the one way through the -x face
+      collide: (p, v, rr) => {
+        const x0 = -D / 2, x1 = D / 2, z1 = W / 2
+        if (p.x < x0 - 2 - rr || p.x > x1 + 2 + rr || Math.abs(p.z) > z1 + 2 + rr) return false
+        const inDoor = Math.abs(p.z) < DOOR_W / 2 - rr && p.y < DOOR_H - rr
+        let hit = false
+        // the side walls, from inside
+        if (Math.abs(p.z) > z1 - 1 - rr && Math.abs(p.z) < z1 + 1 && p.x > x0 && p.x < x1) { const s = Math.sign(p.z); p.z = s * (z1 - 1 - rr); v.z = -Math.abs(v.z) * s * 0.5; hit = true }
+        // the back wall
+        if (p.x > x1 - 1 - rr && p.x < x1 + 1 && Math.abs(p.z) < z1) { p.x = x1 - 1 - rr; v.x = -Math.abs(v.x) * 0.5; hit = true }
+        // the front wall and its lintel, from either side, unless through the door
+        if (!inDoor && Math.abs(p.z) < z1 + 1 && p.y < H + 1) {
+          if (p.x > x0 - 2 - rr && p.x < x0 && v.x > 0) { p.x = x0 - 2 - rr; v.x = -v.x * 0.5; hit = true }
+          else if (p.x < x0 + 1 + rr && p.x >= x0 && v.x < 0) { p.x = x0 + 1 + rr; v.x = -v.x * 0.5; hit = true }
+        }
+        // the roof, from inside
+        if (p.y > H - 1 - rr && p.x > x0 && p.x < x1 && Math.abs(p.z) < z1 && v.y > 0) { p.y = H - 1 - rr; v.y = -v.y * 0.4; hit = true }
+        return hit
+      },
     }
   },
 }
@@ -716,7 +740,7 @@ const dusk: Biome = {
         f.m.visible = Math.sin(t * 2.6 + f.ph * 3) > 0.1
       }
     })
-    return { ground, spots, outline: o, cam: { pos: v3(0, 44, 56), look: v3(0, 2, 4), fov: 38 } }
+    return { ground, spots, outline: o, cam: { pos: v3(0, 44, 56), look: v3(0, 2, 4), fov: 38 }, land: { skid: 0xa66d30, width: 1.2, wobble: 0.3, drag: 34, bounce: 0.32, bits: 0xd9a441, spray: 1 } }
   },
 }
 
@@ -827,27 +851,27 @@ const storm: Biome = {
     }
     for (let k = 0; k + 1 < tops.length; k++) for (const side of [-1.3, 1.3]) wire(kit, g, tops[k].clone().add(v3(side, 0, 0)), tops[k + 1].clone().add(v3(side, 0, 0)), 2.2, 0x2e3340)
     // cairns, and a rowboat wrecked on the rocks
-    for (const [x, z] of scatter(ctx, o.edge, 4, 3, avoid, 4)) {
+    for (const [x, z] of [...scatter(ctx, o.edge, 3, 3, avoid, 4, 1e9, 8), ...scatter(ctx, o.edge, 2, 3, avoid, 4)]) {
       const c = new THREE.Group()
       let y = 0
       for (const sz of [2.4, 1.8, 1.3, 0.9]) { c.add(kit.box(sz, 0.9, sz * (0.8 + r() * 0.4), pick(r, BASALT), (r() - 0.5) * 0.3, y + 0.45, 0)); y += 0.85 }
       stand(c, ground, x, z); g.add(c)
     }
-    const [bx, bz] = scatter(ctx, o.edge, 1, 2.5, avoid, 8)[0] ?? [-20, 12]
+    const [bx, bz] = scatter(ctx, o.edge, 1, 2.5, avoid, 8, 1e9, 10)[0] ?? [-20, 14]
     const boat = new THREE.Group()
     boat.add(kit.box(6.5, 1.5, 2.6, 0x5a4636, 0, 0.75, 0), kit.box(5.3, 1.2, 1.7, 0x2e2620, 0, 1.0, 0), kit.box(0.5, 0.3, 2.2, 0x7a5a3a, -0.6, 1.4, 0), kit.box(0.5, 0.3, 2.2, 0x7a5a3a, 1.6, 1.4, 0))
     const bow = kit.box(1.8, 1.4, 1.6, 0x5a4636, 3.7, 0.8, 0); bow.rotation.y = 0.5; boat.add(bow)
     boat.rotation.set(0, r() * 3, 0.32)
     stand(boat, ground, bx, bz); boat.position.y += 0.5; g.add(boat)
     // rings where the rain hits the wet ground
-    const RINGS = 14
-    const rings = new CellField(RINGS, 1, 0.15, 1, kit.glowMat(0xc4d4e8))
+    const RINGS = 20
+    const rings = new CellField(RINGS, 1, 0.2, 1, kit.glowMat(0xdde8f4))
     g.add(rings.mesh)
-    const ringAt = scatter(ctx, o.edge, RINGS, 4, avoid, 3).map(([x, z]) => ({ x, z, y: ground.top(x, z) + 0.1, ph: r() * 7 }))
+    const ringAt = scatter(ctx, o.edge, RINGS, 4, avoid, 2.5, 1e9, -6).map(([x, z]) => ({ x, z, y: ground.top(x, z) + 0.1, ph: r() * 7 }))
     // the cloud over it, the rain under that, and the bolt
     const cloud = new THREE.Group()
     for (let k = 0; k < 14; k++) { const w = 10 + r() * 14; cloud.add(kit.box(w, 4 + r() * 3, 7 + r() * 6, pick(r, [0x3d4452, 0x4a5262, 0x333945]), (r() - 0.5) * 70, r() * 6, (r() - 0.5) * 60)) }
-    cloud.position.y = 34
+    cloud.position.y = 26
     cloud.traverse((m) => { (m as THREE.Mesh).castShadow = false })
     g.add(cloud)
     const RAIN = 240
@@ -871,16 +895,16 @@ const storm: Biome = {
       }
       smoke.commit(false)
       ringAt.forEach((rg, i) => {
-        const u = (t * 1.3 + rg.ph) % 1
-        const s = 0.6 + u * 3
-        rings.place(i, rg.x, u < 0.45 ? rg.y : -9999, rg.z, 1, s, s)
+        const u = (t * 1.1 + rg.ph) % 1
+        const s = 1 + u * 4.5
+        rings.place(i, rg.x, u < 0.5 ? rg.y : -9999, rg.z, 1, s, s)
       })
       rings.commit(false)
       rodTip.material = kit.glowMat(t < boltUntil || Math.floor(t * 5) % 7 === 0 ? 0xeafdff : 0x8fa0b4)
       for (let i = 0; i < RAIN; i++) {
         const d = drops[i]
         d.y -= dt * 46
-        if (d.y < 0) { d.y = 34; d.x = (r() - 0.5) * 80; d.z = (r() - 0.5) * 70 }
+        if (d.y < 0) { d.y = 26; d.x = (r() - 0.5) * 80; d.z = (r() - 0.5) * 70 }
         rain.place(i, d.x - d.y * 0.08, d.y, d.z)
       }
       rain.commit(false)
@@ -890,7 +914,7 @@ const storm: Biome = {
         let x = (r() - 0.5) * 50, z = (r() - 0.5) * 40
         for (let k = 0; k < 7; k++) {
           bolt[k].visible = true
-          bolt[k].position.set(x, 34 - k * 5 - 2.5, z)
+          bolt[k].position.set(x, 26 - k * 4 - 2, z)
           bolt[k].rotation.z = (r() - 0.5) * 0.8
           x += (r() - 0.5) * 6; z += (r() - 0.5) * 6
         }
@@ -899,7 +923,7 @@ const storm: Biome = {
       if (t > boltUntil) for (const b of bolt) b.visible = false
       g.userData.flash = t < boltUntil ? 1 : Math.max(0, (g.userData.flash as number) - dt * 5)
     })
-    return { ground, spots, outline: o, cam: { pos: v3(0, 40, 54), look: v3(0, 0, 4), fov: 38 } }
+    return { ground, spots, outline: o, cam: { pos: v3(0, 40, 54), look: v3(0, 0, 4), fov: 38 }, land: { skid: 0x3a414e, width: 1.0, wobble: 0.1, drag: 20, bounce: 0.4, bits: 0x9fb4d0, spray: 1.3 } }
   },
 }
 function deadTree(kit: Kit, r: () => number): THREE.Group {
@@ -976,7 +1000,7 @@ const ruins: Biome = {
         w.tail[0].position.copy(p(a - 0.25)); w.tail[1].position.copy(p(a - 0.5))
       }
     })
-    return { ground, spots, outline: o, cam: { pos: v3(0, 40, 52), look: v3(0, 0, 4), fov: 38 } }
+    return { ground, spots, outline: o, cam: { pos: v3(0, 40, 52), look: v3(0, 0, 4), fov: 38 }, land: { skid: 0x2f5a4a, width: 1.1, wobble: 0.3, drag: 30, bounce: 0.36, bits: 0x9f8ccc, spray: 1 } }
   },
 }
 const HULL_WHITE = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.BackSide })
@@ -1079,7 +1103,7 @@ const snow: Biome = {
       }
       flakes.commit(false)
     })
-    return { ground, spots, outline: o, cam: { pos: v3(0, 46, 56), look: v3(0, 4, 2), fov: 38 } }
+    return { ground, spots, outline: o, cam: { pos: v3(0, 46, 56), look: v3(0, 4, 2), fov: 38 }, land: { skid: 0xb4c2da, width: 2.4, wobble: 0.9, drag: 14, bounce: 0.15, bits: 0xffffff, spray: 1.4 } }
   },
 }
 function pine(kit: Kit, r: () => number, h: number): THREE.Group {

@@ -438,6 +438,7 @@ kbd {
 .plate-btn .plbl {
   font-family: 'Pixelify', 'PressStart', monospace; font-weight: 700; font-size: 16px; line-height: 14px;
   color: #1b2033; letter-spacing: 0; white-space: nowrap; text-shadow: 1px 1px 0 rgba(255, 255, 255, .55);
+  transition: transform .18s ease, color .18s ease;
 }
 .plate-btn.on .plbl, .plate-btn:hover .plbl, .plate-btn:focus-visible .plbl { color: #0b0d18; transform: translateY(-2px); }
 .plate-btn:focus-visible { outline: 0; }
@@ -735,18 +736,25 @@ kbd {
 .map-root .kit-ic { filter: drop-shadow(0 0 0 transparent); }
 
 /* ── settings: a kit panel on its own pixel stage over whatever is behind ── */
-.set-root { background: rgba(8, 6, 16, .55); }
+.set-root { background: rgba(8, 6, 16, .55); animation: set-dim .25s ease-out both; }
+.set-root.out { animation: set-dim .22s ease-in reverse both; }
+@keyframes set-dim { from { background: rgba(8, 6, 16, 0); } to { background: rgba(8, 6, 16, .55); } }
+/* the panel drops in from the top and lifts back out: a hard-stepped slide, the way the pause field moves */
 .set-panel {
-  border: 10px solid transparent; border-image: var(--kit-panel) 10 fill / 10px; image-rendering: pixelated;
-  padding: 0 2px 0; display: flex; flex-direction: column; gap: 1px;
+  border: 14px solid transparent; border-image: var(--kit-panel) 14 fill / 14px; image-rendering: pixelated;
+  padding: 0 0 2px; display: flex; flex-direction: column; gap: 1px;
   color: #3b2a55; font-family: 'Silk', monospace; font-size: 8px; line-height: 8px;
+  animation: set-in .3s cubic-bezier(.2, .9, .3, 1.15) both;
 }
+.set-root.out .set-panel { animation: set-out .22s cubic-bezier(.6, 0, .9, .4) both; }
+@keyframes set-in { from { transform: translateY(calc(-100% - 40px)); } to { transform: translateY(0); } }
+@keyframes set-out { from { transform: translateY(0); } to { transform: translateY(calc(-100% - 40px)); } }
 .set-title {
   font-family: 'Pixelify', monospace; font-weight: 700; font-size: 16px; line-height: 14px; color: #2a1b3d;
-  text-align: center; margin: -3px 0 4px; letter-spacing: 0;
+  text-align: center; margin: -6px 0 3px; letter-spacing: 0; text-shadow: 1px 1px 0 #c9a6ea;
 }
 .set-row { display: flex; align-items: center; gap: 4px; height: 15px; }
-.set-label { flex: 0 0 62px; color: #3b2a55; }
+.set-label { flex: 0 0 70px; color: #3b2a55; white-space: nowrap; }
 .set-val { flex: 0 0 34px; text-align: right; color: #6a4796; font-variant-numeric: tabular-nums; }
 .set-pills { margin-left: auto; display: flex; gap: 2px; }
 .set-pill {
@@ -760,7 +768,7 @@ kbd {
 .set-pill:focus-visible { outline: 1px solid #ffde7b; outline-offset: 0; }
 .set-toggle { margin-left: auto; min-width: 30px; }
 .set-range {
-  -webkit-appearance: none; appearance: none; flex: 1 1 auto; margin: 0; height: 11px; background: transparent; cursor: pointer;
+  -webkit-appearance: none; appearance: none; flex: 1 1 0; width: 0; min-width: 0; margin: 0; height: 11px; background: transparent; cursor: pointer;
   --p: 50%;
 }
 .set-range:focus-visible { outline: 1px solid #ffde7b; outline-offset: 1px; }

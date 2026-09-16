@@ -15,26 +15,27 @@
  * brightens it.
  */
 import * as THREE from 'three'
-import { OCEAN_Y, Kit, CellField, blob, buildGround, rockUnder, mixHex, clamp01 } from './island_kit'
+import { OCEAN_Y, LANDING_GRASS, Kit, CellField, blob, buildGround, rockUnder, mixHex, clamp01 } from './island_kit'
 import type { Island, Palette, BiomeCtx, CamPose } from './island_kit'
 import { BIOMES } from './biomes'
 import type { Biome } from './biomes'
 import { rng } from './goose_world'
 
 /** where each biome hangs, in the order of `BIOMES` */
+// all of them under the line the goose flies (the plates' height): the drone comes in over the archipelago, never under it
 const PLACES: [number, number, number][] = [
-  [520, 70, -30],           // goose meadow
-  [640, 40, 150],           // dusk hills
+  [520, 22, -30],           // goose meadow
+  [640, 6, 150],            // dusk hills
   [760, OCEAN_Y + 2, 60],   // salt cove, on the water
-  [880, 95, 170],           // storm flats
-  [600, 140, -140],         // night ruins
-  [770, 150, -110],         // the vault
-  [900, 200, 0],            // dawn steps
+  [880, 28, 170],           // storm flats
+  [600, 34, -140],          // night ruins
+  [770, 40, -110],          // the vault
+  [900, 46, 0],             // dawn steps
 ]
 /** which islands trail islets to which */
 const LINKS: [number, number][] = [[0, 1], [1, 2], [2, 3], [0, 4], [4, 5], [5, 6], [3, 6], [0, 2]]
 /** the wall of cloud past the meadow's edge, the one the goose went through */
-export const WALL = { x: 230, y0: -80, y1: 150, z0: -300, z1: 300 }
+export const WALL = { x: 230, y0: -80, y1: 110, z0: -300, z1: 300 }
 /** where the wall's hole is: the feet of the bird, world space */
 export interface Hole { y: number; z: number }
 
@@ -69,13 +70,15 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
     const toWorld = (p: THREE.Vector3): THREE.Vector3 => p.clone().add(at)
     const cam = (c: CamPose): CamPose => ({ pos: toWorld(c.pos), look: toWorld(c.look), fov: c.fov })
     const island: Island = {
-      id: b.id, name: b.name, g, at, r: b.r,
+      id: b.id, name: b.name, g, at, r: b.r, bob: 0,
+      land: built.land ?? LANDING_GRASS,
+      collide: built.collide ? (p, v, rr) => { p.sub(at); const hit = built.collide!(p, v, rr); p.add(at); return hit } : undefined,
       spots: built.spots.map(toWorld),
       cam: cam(built.cam),
       camIn: built.camIn ? cam(built.camIn) : undefined,
       sky: b.sky,
       inside: (x, z) => built.outline.inside(x - at.x, z - at.z),
-      top: (x, z) => at.y + built.ground.top(x - at.x, z - at.z),
+      top: (x, z) => at.y + island.bob + built.ground.top(x - at.x, z - at.z),
       tick: (t, dt, near) => { for (const a of anims) a(t, dt, near) },
       arrive: built.arrive,
       leave: built.leave,
@@ -171,7 +174,23 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
     if (Math.abs(z - hole.z) < 50 && Math.abs(y - hole.y - 10) < 50) continue
     cloud(x, y, z, 1.6 + q() * 1.4)
   }
-  for (let k = 0; k < 40; k++) cloud(440 + q() * 560, 10 + q() * 240, (q() - 0.5) * 520, 1 + q() * 1.2)
+  // loose clouds over the archipelago, but never on a mark the drone flies to, nor on its way in to one, nor across the chase
+  const marks: THREE.Vector3[] = []
+  for (const i of islands) {
+    marks.push(i.cam.pos, i.cam.pos.clone().add(i.cam.pos.clone().sub(i.cam.look).normalize().multiplyScalar(48)))
+    if (i.camIn) marks.push(i.camIn.pos)
+  }
+  const clear = (x: number, y: number, z: number): boolean => {
+    if (marks.some((m) => Math.hypot(x - m.x, y - m.y, z - m.z) < 70)) return false
+    if (Math.abs(z - hole.z) < 60 && y > hole.y - 20 && y < hole.y + 60 && x < 560) return false
+    return islands.every((i) => Math.hypot(x - i.at.x, z - i.at.z) > i.r + 24 || y < i.at.y - 12 || y > i.at.y + 80)
+  }
+  for (let k = 0, tries = 0; k < 40 && tries < 400; tries++) {
+    const x = 440 + q() * 560, y = -12 + q() * 120, z = (q() - 0.5) * 520
+    if (!clear(x, y, z)) continue
+    cloud(x, y, z, 1 + q() * 1.2)
+    k += 1
+  }
   // and tucked under the floating ones, hugging the rock
   for (const i of islands) {
     if (i.at.y < OCEAN_Y + 10) continue
@@ -212,20 +231,23 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
     wallCells.push({ f, i, x, y, z, sx, sy, sz, dy: (y - HY) / Math.max(1, d), dz: (z - HZ) / Math.max(1, d), d })
   }
   // the coarse curtain, everywhere but round the hole
-  const coarse: [number, number, number][] = []
-  for (let y = WALL.y0; y <= WALL.y1; y += 12) for (let z = WALL.z0; z <= WALL.z1; z += 12) {
-    if (Math.hypot(y - HY, z - HZ) < FINE_R - 4) continue
-    coarse.push([WALL.x + (q() - 0.5) * 12, y + (q() - 0.5) * 3, z + (q() - 0.5) * 3])
+  // the curtain bulges toward the meadow in lumps, so it has tops and sides for the sun to pick out
+  const lump = (y: number, z: number): number => 0.5 + 0.5 * Math.sin(y * 0.09 + z * 0.05) * Math.cos(z * 0.075 - y * 0.04)
+  const coarse: [number, number, number, number][] = []
+  for (let y = WALL.y0; y <= WALL.y1; y += 15) for (let z = WALL.z0; z <= WALL.z1; z += 15) {
+    if (Math.hypot(y - HY, z - HZ) < FINE_R - 6) continue
+    const l = lump(y, z)
+    coarse.push([WALL.x - l * 34 + (q() - 0.5) * 10, y + (q() - 0.5) * 6, z + (q() - 0.5) * 6, l])
   }
   const coarseF = new CellField(coarse.length, 1, 1, 1, cloudMat)
-  coarse.forEach(([x, y, z], i) => { const s = 12 + q() * 5; wallCell(coarseF, i, x, y, z, 14 + q() * 8, s, s) })
+  coarse.forEach(([x, y, z, l], i) => { const s = 15 + q() * 7 + l * 12; wallCell(coarseF, i, x, y, z, 18 + q() * 12 + l * 12, s, s * (0.8 + q() * 0.5)) })
   root.add(coarseF.mesh)
   // the fine cells round the hole, none where the bird went
   const fine: [number, number, number][] = []
   for (let y = HY - FINE_R; y <= HY + FINE_R; y += 2) for (let z = HZ - FINE_R; z <= HZ + FINE_R; z += 2) {
     if (Math.hypot(y - HY, z - HZ) > FINE_R + 2) continue
     if (inHole(y, z)) continue
-    fine.push([WALL.x + (q() - 0.5) * 8, y, z])
+    fine.push([WALL.x - 6 - lump(y, z) * 10 + (q() - 0.5) * 6, y, z])
   }
   const fineF = new CellField(fine.length, 1, 1, 1, cloudMat)
   fine.forEach(([x, y, z], i) => wallCell(fineF, i, x, y, z, 6 + q() * 5, 2.4 + q() * 0.8, 2.4 + q() * 0.8))
@@ -234,7 +256,7 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
   const fluff: [number, number, number][] = []
   for (let y = WALL.y0; y <= WALL.y1; y += 7) for (let z = WALL.z0; z <= WALL.z1; z += 7) {
     if (Math.hypot(y - HY, z - HZ) < FINE_R + 6 || q() > 0.45) continue
-    fluff.push([WALL.x - 10 - q() * 10, y + (q() - 0.5) * 4, z + (q() - 0.5) * 4])
+    fluff.push([WALL.x - 14 - lump(y, z) * 30 - q() * 8, y + (q() - 0.5) * 4, z + (q() - 0.5) * 4])
   }
   const fluffF = new CellField(fluff.length, 1, 1, 1, cloudMat)
   fluff.forEach(([x, y, z], i) => { const s = 4 + q() * 5; wallCell(fluffF, i, x, y, z, 5 + q() * 6, s, s * (1 + q())) })
@@ -283,7 +305,7 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
 
   return {
     root, islands, centre,
-    vista: { pos: new THREE.Vector3(WALL.x + 175, 46, hole.z), look: new THREE.Vector3(700, 70, 20), fov: 52 },
+    vista: { pos: new THREE.Vector3(WALL.x + 70, hole.y + 26, hole.z + 30), look: new THREE.Vector3(700, 14, 30), fov: 54 },
     palette: (from, base) => {
       let wr = 0, wg = 0, wb = 0
       const acc: number[][] = [[], [], [], []]
@@ -313,6 +335,12 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
       return f
     },
     tick: (t, dt, from) => {
+      // the floating ones ride the air, a little, each to its own beat
+      islands.forEach((i, k) => {
+        if (i.at.y < OCEAN_Y + 10) return
+        i.bob = Math.sin(t * (0.3 + k * 0.04) + k * 1.7) * 0.7
+        i.g.position.y = i.at.y + i.bob
+      })
       for (const i of islands) i.tick(t, dt, near(from, i, 180))
       tickSea(t)
       for (const c of clouds) { c.g.position.z += dt * c.speed; if (c.g.position.z > 300) c.g.position.z = -300 }
@@ -327,7 +355,7 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
       sparks.commit(false)
       flock.forEach((b, k) => {
         const a = t * 0.12 + b.ph
-        tmp.set(centre.x + Math.cos(a) * 250, 120 + Math.sin(t * 0.5 + b.ph) * 6 + k * 2, centre.z + Math.sin(a) * 250)
+        tmp.set(centre.x + Math.cos(a) * 250, 78 + Math.sin(t * 0.5 + b.ph) * 6 + k * 2, centre.z + Math.sin(a) * 250)
         b.g.position.copy(tmp)
         b.g.rotation.y = -a - Math.PI / 2
         const flap = Math.sin(t * 8 + b.ph)

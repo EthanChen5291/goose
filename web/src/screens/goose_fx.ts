@@ -3,36 +3,121 @@
  *
  * Emoticons are the game's own idiom — a "!" over a startled head, a "?" for a
  * look-around, a note for a honk, the vein-pop for a >:( — drawn here as
- * little voxel glyphs from 5-wide bitmaps with a one-cell ink border, so they
- * are the same kind of thing as the rest of the pixel world.  They face the
- * camera and drift up for most of a second.
+ * little voxel glyphs from bitmaps at about a game pixel a cell, shaded down
+ * one side and ringed in one pixel of dark-purple ink, so they are the same
+ * kind of thing as the rest of the pixel world.  They pop in with a lean,
+ * face the camera and drift up for most of a second.
  *
  * Feathers and dust are pooled boxes with a velocity: feathers flutter and
  * fall slowly, dust puffs out and drops.  Nothing fades — pixel art has no
  * alpha — things simply stop being there.
  */
 import * as THREE from 'three'
-import { G_INK } from './goose_rig'
 
 export type EmoteKind = 'bang' | 'quest' | 'note' | 'grr' | 'star'
 
+/**
+ * The glyphs: `1` the colour, `2` its shade (down the right and along the
+ * bottom, so the thing has a side), `3` a highlight up the left.  Drawn at
+ * about one game pixel a cell, so the ink around them is one pixel — a line,
+ * not a slab.  The "!" leans, the "?" hooks, the note beams, the vein-pop is
+ * four fat lobes round a hollow, the star is the five-point one.
+ */
 const GLYPHS: Record<EmoteKind, string[]> = {
-  bang: ['01110', '01110', '01110', '00100', '00100', '00000', '01110'],
-  quest: ['01110', '10001', '00001', '00110', '00100', '00000', '00100'],
-  note: ['00111', '00101', '00100', '00100', '01100', '11100', '01000'],
-  grr: ['10001', '01010', '00100', '01010', '10001'],
-  star: ['00100', '01110', '11111', '01110', '00100'],
+  bang: [
+    '...1111.',
+    '..311112',
+    '..311122',
+    '..311122',
+    '..31122.',
+    '..31122.',
+    '...1122.',
+    '...112..',
+    '...112..',
+    '...12...',
+    '........',
+    '...11...',
+    '..3112..',
+    '..1122..',
+  ],
+  quest: [
+    '..11111..',
+    '.3111112.',
+    '.311.1122',
+    '.112..112',
+    '......112',
+    '.....1122',
+    '....1122.',
+    '...1122..',
+    '...112...',
+    '...12....',
+    '.........',
+    '...11....',
+    '..3112...',
+    '..1122...',
+  ],
+  note: [
+    '....11...',
+    '....311..',
+    '....3111.',
+    '....31.12',
+    '....31.12',
+    '....31..2',
+    '....31...',
+    '....31...',
+    '.11131...',
+    '31111112.',
+    '31111122.',
+    '.111122..',
+    '..1122...',
+  ],
+  grr: [
+    '..311.311..',
+    '.3111.1112.',
+    '.3111.1112.',
+    '..11...12..',
+    '...........',
+    '...........',
+    '..11...11..',
+    '.3111.1112.',
+    '.1111.1112.',
+    '..112.122..',
+  ],
+  star: [
+    '.....1.....',
+    '....313....',
+    '....311....',
+    '11131111112',
+    '.311111112.',
+    '..1111122..',
+    '..1111122..',
+    '.111.2.112.',
+    '.11.....12.',
+    '.1.......2.',
+  ],
 }
-const COLORS: Record<EmoteKind, number> = { bang: 0xffde7b, quest: 0xffffff, note: 0x8fe3ff, grr: 0xff5c7a, star: 0xffde7b }
+const COLORS: Record<EmoteKind, number> = { bang: 0xffde7b, quest: 0xfff8f0, note: 0x8fe3ff, grr: 0xff5c7a, star: 0xffde7b }
+/** the ink round an emote: a dark purple, softer than the goose's black */
+const EMOTE_INK = 0x2a1b3d
+/** the shade: the colour pulled toward the kit's purple */
+const SHADE_TO = 0x6a4796
 
-/** one glyph as an instanced mesh of cubes: the glyph's cells in colour, a dilated ring in ink */
+function mixHex(a: number, b: number, k: number): number {
+  const ca = [(a >> 16) & 255, (a >> 8) & 255, a & 255], cb = [(b >> 16) & 255, (b >> 8) & 255, b & 255]
+  const m = ca.map((v, i) => Math.round(v + (cb[i] - v) * k))
+  return (m[0] << 16) | (m[1] << 8) | m[2]
+}
+
+/** one glyph as an instanced mesh of cubes: colour, shade and highlight cells, a one-cell ring of ink */
 function glyphMesh(rows: string[], color: number, cell: number): THREE.InstancedMesh {
   const h = rows.length, w = rows[0].length
-  const on = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < w && y < h && rows[y][x] === '1'
+  const at = (x: number, y: number): string => (x >= 0 && y >= 0 && x < w && y < h ? rows[y][x] : '.')
+  const on = (x: number, y: number): boolean => at(x, y) !== '.'
+  const tone: Record<string, number> = { '1': color, '2': mixHex(color, SHADE_TO, 0.5), '3': mixHex(color, 0xffffff, 0.55) }
   const cells: [number, number, number][] = []
   for (let y = -1; y <= h; y++) for (let x = -1; x <= w; x++) {
-    if (on(x, y)) cells.push([x, y, color])
-    else if (on(x + 1, y) || on(x - 1, y) || on(x, y + 1) || on(x, y - 1)) cells.push([x, y, G_INK])
+    if (on(x, y)) cells.push([x, y, tone[at(x, y)]])
+    else if (on(x + 1, y) || on(x - 1, y) || on(x, y + 1) || on(x, y - 1)) cells.push([x, y, EMOTE_INK])
   }
   const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(cell, cell, cell * 0.5), new THREE.MeshBasicMaterial({ color: 0xffffff }), cells.length)
   const m = new THREE.Matrix4()
@@ -73,7 +158,7 @@ export class Emotes {
     m.position.copy(at)
     this.live.push({ mesh: m, kind, born: now, at: at.clone(), orbit, phase })
   }
-  /** `pxAt(p)` is the world size of one game pixel at `p`; a glyph cell is drawn ~2.2 px */
+  /** `pxAt(p)` is the world size of one game pixel at `p`; a glyph cell is drawn ~1.1 px */
   update(now: number, camera: THREE.Camera, pxAt: (p: THREE.Vector3) => number): void {
     for (let i = this.live.length - 1; i >= 0; i--) {
       const e = this.live[i]
@@ -89,7 +174,10 @@ export class Emotes {
         e.mesh.position.set(e.at.x + Math.sin(age * 9 + e.phase) * 0.25, e.at.y + step * 3.2 + (age > life * 0.75 ? 1 : 0), e.at.z)
       }
       e.mesh.quaternion.copy(camera.quaternion)
-      e.mesh.scale.setScalar(Math.max(0.05, pxAt(e.mesh.position) * 2.2 / this.cell))
+      // a lean, its way decided by the phase, and a pop on the way in: small, big, settled
+      e.mesh.rotateZ((e.phase % 2 < 1 ? 1 : -1) * (0.14 + (e.orbit > 0 ? Math.sin(age * 11) * 0.2 : 0)))
+      const pop = age < 0.05 ? 0.55 : age < 0.1 ? 1.25 : age < 0.15 ? 0.92 : 1
+      e.mesh.scale.setScalar(Math.max(0.05, pxAt(e.mesh.position) * 1.12 * pop / this.cell))
     }
   }
   clear(): void {
@@ -106,13 +194,16 @@ interface Grain { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; bor
  */
 export class Bits {
   private grains: Grain[] = []
+  private readonly mat: THREE.MeshBasicMaterial
+  /** every bit, alive or not, takes this colour from now on */
+  setColor(c: number): void { this.mat.color.setHex(c) }
   constructor(scene: THREE.Scene, geo: THREE.BufferGeometry, color: number, n: number,
               private gravity: number, private drag: number, private life: number, private flutter: number,
               /** the ground the bits come to rest on (the meadow's, unless told otherwise) */
               public floor = 0.15) {
-    const mat = new THREE.MeshBasicMaterial({ color })
+    this.mat = new THREE.MeshBasicMaterial({ color })
     for (let i = 0; i < n; i++) {
-      const m = new THREE.Mesh(geo, mat)
+      const m = new THREE.Mesh(geo, this.mat)
       m.visible = false
       m.castShadow = false
       scene.add(m)

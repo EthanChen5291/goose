@@ -67,7 +67,7 @@ const ROWS: Row[] = [
   },
   { kind: 'toggle', key: 'stage_view', label: 'Stage view', hint: 'Bigger orbs and rings.' },
   { kind: 'toggle', key: 'no_fail', label: 'No fail', hint: 'Letters mode runs on even at zero HP.' },
-  { kind: 'toggle', key: 'reduce_motion', label: 'Reduce motion' },
+  { kind: 'toggle', key: 'reduce_motion', label: 'Less motion', hint: 'Fewer shakes and flashes.' },
 ]
 
 /**
@@ -175,12 +175,21 @@ export function buildSettingsPanel(
   const close = document.createElement('button')
   close.className = 'set-done'
   close.textContent = 'DONE'
-  close.onclick = () => { stop(); onClose() }
   panel.appendChild(close)
   stage.appendChild(panel)
 
+  // closing: the panel lifts back out of the top, then the shell is told
+  let leaving = false
+  const leave = (): void => {
+    if (leaving) return
+    leaving = true
+    stop()
+    px.root.classList.add('out')
+    window.setTimeout(onClose, 230)
+  }
+  close.onclick = leave
   const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); stop(); onClose() }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); leave() }
   }
   // capture, so the screen underneath does not also act on the key
   window.addEventListener('keydown', onKey, true)

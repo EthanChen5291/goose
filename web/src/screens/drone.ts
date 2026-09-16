@@ -69,6 +69,8 @@ export class Drone {
   /** the pilot's error: a slow wander per axis, and a correction that decays */
   private readonly errPhase = [Math.random() * 7, Math.random() * 7, Math.random() * 7]
   private readonly correction = new THREE.Vector3()
+  /** where the correction is going: the stick is pushed over a few frames, not in one */
+  private readonly correctionGoal = new THREE.Vector3()
   private nextCorrection = 0
   /** the shake asked for: how hard, until when, and the held offset */
   private shakeAmp = 0
@@ -117,7 +119,11 @@ export class Drone {
     this.sloppy = opts.sloppy ?? this.sloppy
     this.hesitate = opts.hesitate ?? this.hesitate
     if (opts.fov !== undefined) this.fovGoal = opts.fov
-    if (moved) { this.goalSetAt = this.t; this.nextCorrection = this.t + 0.4 + Math.random() * 0.5 }
+    if (moved) {
+      // a fresh mark from a standstill is looked at first; one taken on the fly keeps the thrust it has
+      if (this.vel.length() < this.cruise * 0.3) this.goalSetAt = this.t
+      this.nextCorrection = this.t + 0.4 + Math.random() * 0.5
+    }
   }
 
   /** point the gimbal at `p` (it gets there at its own pace) */
@@ -148,9 +154,10 @@ export class Drone {
     if (t > this.nextCorrection) {
       // they notice they are off and nudge the stick — a step in the aim, which the body then chases
       this.nextCorrection = t + 0.7 + Math.random() * 1.1
-      this.correction.set(Math.random() - 0.5, (Math.random() - 0.5) * 0.6, Math.random() - 0.5).multiplyScalar(this.sloppy * (0.4 + k))
+      this.correctionGoal.set(Math.random() - 0.5, (Math.random() - 0.5) * 0.6, Math.random() - 0.5).multiplyScalar(this.sloppy * (0.4 + k))
     }
-    this.correction.multiplyScalar(Math.exp(-dt * 1.4))
+    this.correctionGoal.multiplyScalar(Math.exp(-dt * 1.4))
+    this.correction.lerp(this.correctionGoal, 1 - Math.exp(-dt * 5))
     const wander = this.sloppy * (0.25 + 0.75 * k)
     this.aim.copy(this.goal).add(this.correction)
     this.aim.x += Math.sin(t * 0.37 + this.errPhase[0]) * wander
@@ -165,7 +172,7 @@ export class Drone {
     this.acc.copy(this.tmp).multiplyScalar(omega * omega).addScaledVector(this.vel, -2 * zeta * omega)
     // the thrust ramps in after the pilot has looked at the new mark
     const since = t - this.goalSetAt
-    const thrust = this.goalSetAt < 0 ? 1 : clamp((since - this.hesitate) / 0.6, 0, 1)
+    const thrust = this.goalSetAt < 0 ? 1 : clamp((since - this.hesitate) / 0.35, 0, 1)
     const aMax = this.accel * (0.15 + 0.85 * thrust * thrust)
     if (this.acc.length() > aMax) this.acc.setLength(aMax)
     this.vel.addScaledVector(this.acc, dt)

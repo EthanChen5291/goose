@@ -13,7 +13,10 @@ const page = await browser.newPage({ viewport: { width: 1512, height: 887 }, dev
 const errors = []
 page.on('pageerror', (e) => errors.push(e.message))
 page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errors.push(`[${m.type()}] ${m.text().slice(0, 240)}`) })
-const shot = (name) => page.screenshot({ path: `${SHOTS}/${name}.png` })
+const shot = async (name) => {
+  await page.screenshot({ path: `${SHOTS}/${name}.png` })
+  if (process.env.TRACE) { const i = await page.evaluate(() => (window.__movieInfo ? window.__movieInfo() : null)); console.log(name, i && i.mode, i && i.cam.join(',')) }
+}
 const at = async (t0, list) => { for (const [name, ms] of list) { const wait = t0 + ms - Date.now(); if (wait > 0) await page.waitForTimeout(wait); await shot(name) } }
 const centre = async (sel) => { const b = await page.locator(sel).boundingBox(); return [b.x + b.width / 2, b.y + b.height / 2, b] }
 

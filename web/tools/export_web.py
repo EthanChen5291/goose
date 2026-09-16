@@ -64,6 +64,21 @@ THEME_BPM = 165
 THEME = Cut(os.path.join("built-in", "goose.wav"), "theme.mp3",
             start=0.3468, dur=72 * 4 * 60 / THEME_BPM)
 
+# Except that the track was written to end, not to come round again: its last
+# note lands on beat 287 and rings out, so the closing 3/4 beat is decay alone.
+# The file is still a whole 72 bars and the seam is still on the grid, but with
+# nothing driving into the downbeat the ear hears the loop drop a beat.
+#
+# The outro runs an 8-bar phrase twice, which makes the last bar the same bar as
+# bar 63 — so the 3/4 beat the arrangement would have played into the downbeat
+# is the one 8 bars back.  It is mixed in over the ring rather than replacing
+# it, so the ending still decays, and the cut ends on a 4 ms ramp because the
+# fill is live audio where there used to be near-silence to splice.
+THEME_FILL_AT = 287.25    # beats into the cut: where the playing stops
+THEME_FILL_FROM = 255.25  # the same beat of the same bar, one 8-bar phrase back
+THEME_FILL_FADE = 0.02    # seconds: the splice in, under the ring it joins
+THEME_END_FADE = 0.004    # seconds: the splice out, into the loop's downbeat
+
 # The recorded effects.  The waddles open on a moment of room tone that lands as
 # a late footstep, so each starts at its first real step; -4.4 dBFS is the level
 # they shared with the synthesised kit, less the 15% they were asked to come down.
@@ -137,6 +152,32 @@ def encode_args(src: str, dst: str, peak_db: float | None = None,
         lift = ["-af", f"highpass=f=40,volume={gain_db:.1f}dB", "-ac", "1"]
     return ["ffmpeg", "-v", "error", "-y", "-i", src, *cut, *lift,
             "-codec:a", "libmp3lame", "-b:a", AUDIO_BITRATE, "-map_metadata", "-1", dst]
+
+
+def theme_args(src: str, dst: str) -> list[str]:
+    """The ffmpeg call that writes the looping menu theme.
+
+    The plain cut plus the fill described at `THEME_FILL_AT`: the same source,
+    trimmed twice and mixed, so the last 3/4 beat carries the groove into the
+    downbeat the loop returns to.  Like `encode_args`, it is the whole recipe
+    and nothing done yet, so the splice can be read without running an encoder.
+    """
+    beat = 60 / THEME_BPM
+    dur = THEME.dur
+    hole = THEME_FILL_AT * beat
+    fill = dur - hole
+    graph = (
+        f"[0:a]atrim=start={THEME.start:.6f}:duration={dur:.6f},"
+        f"asetpts=PTS-STARTPTS[body];"
+        f"[0:a]atrim=start={THEME.start + THEME_FILL_FROM * beat:.6f}:duration={fill:.6f},"
+        f"asetpts=PTS-STARTPTS,afade=t=in:st=0:d={THEME_FILL_FADE},"
+        f"adelay={hole * 1000:.1f}:all=1[fill];"
+        f"[body][fill]amix=inputs=2:duration=first:normalize=0,"
+        f"afade=t=out:st={dur - THEME_END_FADE:.6f}:d={THEME_END_FADE}[out]"
+    )
+    return ["ffmpeg", "-v", "error", "-y", "-i", src, "-filter_complex", graph,
+            "-map", "[out]", "-codec:a", "libmp3lame", "-b:a", AUDIO_BITRATE,
+            "-map_metadata", "-1", dst]
 
 
 def transcode(src: str, dst: str, peak_db: float | None = None,
@@ -268,7 +309,13 @@ def main() -> None:
             if not os.path.exists(src):
                 print("skip (missing)", cut.src)
                 continue
-            transcode(src, os.path.join(out_dir, cut.out), cut.peak_db, cut.start, cut.dur,
+            dst = os.path.join(out_dir, cut.out)
+            if cut is THEME:
+                # the theme is a cut and a splice, not a cut alone
+                if is_stale(src, dst, os.path.getmtime(__file__)):
+                    subprocess.run(theme_args(src, dst), check=True)
+                continue
+            transcode(src, dst, cut.peak_db, cut.start, cut.dur,
                       recipe=os.path.getmtime(__file__))
 
     for src_rel, dst_name in FONTS:

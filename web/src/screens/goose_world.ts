@@ -242,6 +242,8 @@ export function buildMeadow(scene: THREE.Scene, base: THREE.MeshToonMaterial): M
     const hill = new THREE.Mesh(new THREE.SphereGeometry(40 + r() * 40, 8, 6), base.clone())
     ;(hill.material as THREE.MeshToonMaterial).color.setHex(k % 2 ? 0x5f9f6e : 0x76b37a)
     hill.scale.y = 0.35 + r() * 0.2
+    // none dead ahead: that is the way to the cloud, and the hole in it has to show
+    if (k === 0) continue
     hill.position.set(Math.cos(a) * d, -6, Math.sin(a) * d)
     hill.receiveShadow = false
     scene.add(hill)

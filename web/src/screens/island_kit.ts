@@ -292,6 +292,22 @@ export interface CamPose { pos: THREE.Vector3; look: THREE.Vector3; fov: number 
 /** an island's light: sky, fog, sky light, sun */
 export type Palette = [number, number, number, number]
 
+/** how the thrown goose lands on a ground: the streak it leaves, the give of the ground, the bits it throws up */
+export interface Landing {
+  /** the colour of the streak, and how wide */
+  skid: number
+  width: number
+  /** how much the streak wanders side to side (a trench in snow, a straight scuff on steel) */
+  wobble: number
+  /** how hard the ground slows the roll, and what a bounce keeps of its lift */
+  drag: number
+  bounce: number
+  /** what flies up on a hit, and how far */
+  bits: number
+  spray: number
+}
+export const LANDING_GRASS: Landing = { skid: 0x55702c, width: 1.1, wobble: 0.2, drag: 32, bounce: 0.36, bits: 0xc9c2a8, spray: 1 }
+
 export interface Island {
   id: string
   name: string
@@ -299,6 +315,11 @@ export interface Island {
   /** the island's base point, world space: the level of its walkway */
   at: THREE.Vector3
   r: number
+  /** the island's own slow rise and fall, this frame, world units (0 for one on the sea) */
+  bob: number
+  land: Landing
+  /** walls a thrown goose can hit: pushes `pos` (world) out and reflects `vel`; true if it did */
+  collide?: (pos: THREE.Vector3, vel: THREE.Vector3, r: number) => boolean
   /** where the six level stones stand, world space, on the walkway */
   spots: THREE.Vector3[]
   /** the drone's mark over the island, and — after `arrive` — where it goes in */

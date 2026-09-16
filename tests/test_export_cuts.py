@@ -38,6 +38,23 @@ def test_the_theme_starts_on_its_first_beat(export):
     assert 0.3 < export.THEME.start < 0.4
 
 
+def test_the_theme_fill_is_the_same_beat_a_phrase_back(export):
+    """The splice only disappears if it is the bar the ear already heard.
+
+    The outro runs its 8-bar phrase twice, so the beat missing from the last bar
+    is the one 8 bars — 32 beats — behind it, and on the same subdivision.
+    """
+    assert export.THEME_FILL_AT - export.THEME_FILL_FROM == 32
+    assert export.THEME_FILL_AT % 1 == export.THEME_FILL_FROM % 1
+
+
+def test_the_theme_fill_reaches_the_end_of_the_cut(export):
+    """A fill that stopped short would leave the hole it was cut to close."""
+    beat = 60 / export.THEME_BPM
+    assert export.THEME_FILL_AT * beat < export.THEME.dur
+    assert export.THEME.dur - export.THEME_FILL_AT * beat < beat
+
+
 def test_every_waddle_is_trimmed_and_levelled(export):
     """Dead air at the front of these lands as a late footstep under the goose."""
     waddles = [c for c in export.EFFECTS if c.out.startswith("gooserun")]
@@ -99,3 +116,38 @@ def test_a_levelled_file_is_lifted_and_folded_to_mono(export):
     args = export.encode_args("in.wav", "out.mp3", peak_db=-4.4, gain_db=21.7)
     assert args[args.index("-af") + 1] == "highpass=f=40,volume=21.7dB"
     assert args[args.index("-ac") + 1] == "1"
+
+
+def test_the_theme_is_cut_and_spliced_in_one_pass(export):
+    """Both halves come out of the same master, so both trims are on [0:a]."""
+    args = export.theme_args("in.wav", "out.mp3")
+    graph = args[args.index("-filter_complex") + 1]
+    assert graph.count("[0:a]atrim") == 2
+    assert args[args.index("-map") + 1] == "[out]"
+    assert "libmp3lame" in args and args[-1] == "out.mp3"
+
+
+def test_the_theme_splice_lands_where_the_playing_stops(export):
+    """A fill delayed to the wrong beat is the dropped beat, moved."""
+    beat = 60 / export.THEME_BPM
+    args = export.theme_args("in.wav", "out.mp3")
+    graph = args[args.index("-filter_complex") + 1]
+    delay_ms = float(graph.split("adelay=")[1].split(":")[0])
+    assert delay_ms / 1000 == pytest.approx(export.THEME_FILL_AT * beat, abs=1e-3)
+
+
+def test_the_theme_splice_is_mixed_under_the_ring_it_joins(export):
+    """Replacing the ending would cut the decay off; amix keeps it."""
+    args = export.theme_args("in.wav", "out.mp3")
+    graph = args[args.index("-filter_complex") + 1]
+    assert "amix=inputs=2:duration=first:normalize=0" in graph
+    assert f"afade=t=in:st=0:d={export.THEME_FILL_FADE}" in graph
+
+
+def test_the_theme_ends_on_a_ramp_into_the_downbeat(export):
+    """The fill is live audio where near-silence used to hide the splice out."""
+    args = export.theme_args("in.wav", "out.mp3")
+    graph = args[args.index("-filter_complex") + 1]
+    start = float(graph.split("afade=t=out:st=")[1].split(":")[0])
+    assert start == pytest.approx(export.THEME.dur - export.THEME_END_FADE, abs=1e-6)
+    assert export.THEME_END_FADE < 0.01, "a longer ramp is a dip you can hear"
