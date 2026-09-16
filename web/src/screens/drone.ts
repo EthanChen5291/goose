@@ -23,8 +23,12 @@
  *     samples — CameraService's trick, and in a pixel buffer a held offset
  *     reads as a jolt where a smooth one reads as blur.
  *
- * The director sets marks (`fly`, `lookAt`, `cut`); the drone gets there
- * its own way.  `apply` writes the result to a three.js camera.
+ * The director sets marks (`fly`, `lookAt`, `cut`) and, for a long flight,
+ * a whole curve (`follow`): the body rides the curve with a jerk-limited
+ * speed along it — one continuous arc, banked by the arc's own curvature —
+ * and the spring takes only the last few units onto the mark.  Everything
+ * else (the pilot's hand, the gimbal, the air) is on top of either.
+ * `apply` writes the result to a three.js camera.
  */
 import * as THREE from 'three'
 
@@ -43,7 +47,13 @@ export interface FlyOptions {
   sloppy?: number
   /** seconds the pilot looks before pushing the stick */
   hesitate?: number
+  /** `follow` only: the speed to arrive at the end of the curve with, units/s (the spring takes it from there) */
+  arrive?: number
 }
+
+const smoothstep = (u: number) => u * u * (3 - 2 * u)
+/** the deceleration the tail of a curve is flown at, units/s²: v = √(2·a·left), so the end is reached and not crept up on */
+const A_END = 28
 
 export class Drone {
   readonly pos = new THREE.Vector3()
@@ -57,6 +67,9 @@ export class Drone {
   private pitch = 0
   private yawVel = 0
   private pitchVel = 0
+  /** where the gimbal was told to point last frame, as angles, for the rate the target is moving at */
+  private wantYawPrev = 0
+  private wantPitchPrev = 0
   private roll = 0
   fov = 38
   private fovGoal = 38
@@ -66,6 +79,13 @@ export class Drone {
   private sloppy = 3
   private hesitate = 0.3
   private goalSetAt = -9
+  /** the curve being flown, if one is: its length, how far along, the speed along it, and the speed it started at */
+  private path: { curve: THREE.Curve<THREE.Vector3>; len: number; s: number; vs: number; v0: number; arrive: number } | null = null
+  /** the acceleration the body leans to, smoothed: the spring's own, or the curve's */
+  private readonly lean = new THREE.Vector3()
+  /** the pilot's error this frame (correction plus wander), and the same eased, for riding a curve */
+  private readonly off = new THREE.Vector3()
+  private readonly offEased = new THREE.Vector3()
   /** the pilot's error: a slow wander per axis, and a correction that decays */
   private readonly errPhase = [Math.random() * 7, Math.random() * 7, Math.random() * 7]
   private readonly correction = new THREE.Vector3()
@@ -84,7 +104,7 @@ export class Drone {
   /** buffeting at cruise, world units */
   buffet = 0.5
   /** how far the drone banks into a turn, radians per unit of lateral acceleration */
-  bank = 0.0045
+  bank = 0.0012
   private t = 0
   private readonly acc = new THREE.Vector3()
   private readonly tmp = new THREE.Vector3()
@@ -102,11 +122,16 @@ export class Drone {
     this.dir.copy(look).sub(pos).normalize()
     this.yaw = Math.atan2(this.dir.z, this.dir.x)
     this.pitch = Math.asin(clamp(this.dir.y, -1, 1))
+    this.wantYawPrev = this.yaw
+    this.wantPitchPrev = this.pitch
     this.yawVel = this.pitchVel = 0
     this.roll = 0
     this.fov = this.fovGoal = fov
     this.fovVel = 0
     this.correction.set(0, 0, 0)
+    this.offEased.set(0, 0, 0)
+    this.lean.set(0, 0, 0)
+    this.path = null
     this.goalSetAt = -9
   }
 
@@ -114,16 +139,44 @@ export class Drone {
   fly(pos: THREE.Vector3, opts: FlyOptions = {}): void {
     const moved = this.goal.distanceTo(pos) > 0.5
     this.goal.copy(pos)
-    this.cruise = opts.cruise ?? this.cruise
-    this.accel = opts.accel ?? this.accel
-    this.sloppy = opts.sloppy ?? this.sloppy
-    this.hesitate = opts.hesitate ?? this.hesitate
-    if (opts.fov !== undefined) this.fovGoal = opts.fov
+    this.setOpts(opts)
+    this.path = null
     if (moved) {
       // a fresh mark from a standstill is looked at first; one taken on the fly keeps the thrust it has
       if (this.vel.length() < this.cruise * 0.3) this.goalSetAt = this.t
       this.nextCorrection = this.t + 0.4 + Math.random() * 0.5
     }
+  }
+
+  private setOpts(opts: FlyOptions): void {
+    this.cruise = opts.cruise ?? this.cruise
+    this.accel = opts.accel ?? this.accel
+    this.sloppy = opts.sloppy ?? this.sloppy
+    this.hesitate = opts.hesitate ?? this.hesitate
+    if (opts.fov !== undefined) this.fovGoal = opts.fov
+  }
+
+  /**
+   * fly the whole of `curve`, from its start (where the drone is) to its end: the speed along it ramps up from whatever the
+   * drone is doing now, cruises, and comes down so the end is met at `arrive`, where the spring takes over onto the mark
+   */
+  follow(curve: THREE.Curve<THREE.Vector3>, opts: FlyOptions = {}): void {
+    this.setOpts(opts)
+    const v0 = this.vel.length()
+    this.path = { curve, len: Math.max(1, curve.getLength()), s: 0, vs: v0, v0, arrive: opts.arrive ?? 8 }
+    // the curve starts where the body is; the pilot's error grows back onto it from nothing
+    this.offEased.set(0, 0, 0)
+    curve.getPoint(1, this.goal)
+    this.goalSetAt = this.t
+    this.nextCorrection = this.t + 0.4 + Math.random() * 0.5
+  }
+
+  /** how far along the curve it is, 0..1 — 1 when it is not on one */
+  progress(): number { return this.path ? this.path.s / this.path.len : 1 }
+
+  /** the frame's numbers, for a probe */
+  debug(): { speed: number; roll: number; pitch: number; yaw: number; acc: number; u: number; shaking: boolean } {
+    return { speed: this.vel.length(), roll: this.outRoll, pitch: this.outPitch, yaw: this.outYaw, acc: this.lean.length(), u: this.progress(), shaking: this.t < this.shakeUntil }
   }
 
   /** point the gimbal at `p` (it gets there at its own pace) */
@@ -159,48 +212,79 @@ export class Drone {
     this.correctionGoal.multiplyScalar(Math.exp(-dt * 1.4))
     this.correction.lerp(this.correctionGoal, 1 - Math.exp(-dt * 5))
     const wander = this.sloppy * (0.25 + 0.75 * k)
-    this.aim.copy(this.goal).add(this.correction)
-    this.aim.x += Math.sin(t * 0.37 + this.errPhase[0]) * wander
-    this.aim.y += Math.sin(t * 0.29 + this.errPhase[1]) * wander * 0.5
-    this.aim.z += Math.sin(t * 0.43 + this.errPhase[2]) * wander
-
-    // ── the body: an underdamped spring toward the aim, capped in thrust and speed ──
-    // ω from the stopping distance at cruise: a = ω²·d, and the run decelerates over d ≈ v²/(2a)
-    const omega = Math.sqrt(2 * this.accel / Math.max(20, this.cruise)) * 1.15
-    const zeta = 0.72
-    this.tmp.copy(this.aim).sub(this.pos)
-    this.acc.copy(this.tmp).multiplyScalar(omega * omega).addScaledVector(this.vel, -2 * zeta * omega)
-    // the thrust ramps in after the pilot has looked at the new mark
+    this.off.copy(this.correction)
+    this.off.x += Math.sin(t * 0.37 + this.errPhase[0]) * wander
+    this.off.y += Math.sin(t * 0.29 + this.errPhase[1]) * wander * 0.5
+    this.off.z += Math.sin(t * 0.43 + this.errPhase[2]) * wander
+    this.offEased.lerp(this.off, 1 - Math.exp(-dt * 3))
+    this.aim.copy(this.goal).add(this.off)
     const since = t - this.goalSetAt
-    const thrust = this.goalSetAt < 0 ? 1 : clamp((since - this.hesitate) / 0.35, 0, 1)
-    const aMax = this.accel * (0.15 + 0.85 * thrust * thrust)
-    if (this.acc.length() > aMax) this.acc.setLength(aMax)
-    this.vel.addScaledVector(this.acc, dt)
-    if (this.vel.length() > this.cruise) this.vel.setLength(this.cruise)
-    this.pos.addScaledVector(this.vel, dt)
 
-    // ── the gimbal: rate-limited springs on yaw and pitch, so a big pan swings past and comes back ──
+    if (this.path) {
+      // ── the body on a curve: the speed along it is what is flown, and it is never stepped ──
+      const p = this.path
+      const left = p.len - p.s
+      // in: from the speed it had to cruise over a beat and a half; out: a soft ramp over the stopping distance with headroom,
+      // floored by a constant-deceleration tail that meets the end at `arrive` rather than creeping up on it
+      const vIn = p.v0 + (this.cruise - p.v0) * smoothstep(clamp((since - this.hesitate) / 1.6, 0, 1))
+      const dOut = this.cruise * this.cruise / (2 * this.accel) * 1.7
+      const vOut = Math.max(this.cruise * smoothstep(clamp(left / dOut, 0, 1)), Math.sqrt(2 * A_END * left))
+      const floor = p.arrive * clamp((since - this.hesitate) / 0.4, 0, 1)
+      const want = Math.max(Math.min(vIn, vOut), floor)
+      p.vs += clamp((want - p.vs) * Math.min(1, dt * 8), -this.accel * dt, this.accel * dt)
+      p.s = Math.min(p.len, p.s + p.vs * dt)
+      const u = p.s / p.len
+      p.curve.getPointAt(u, this.tmp)
+      p.curve.getTangentAt(u, this.tmp2).multiplyScalar(p.vs)
+      this.acc.copy(this.tmp2).sub(this.vel).divideScalar(Math.max(1e-3, dt))
+      this.vel.copy(this.tmp2)
+      this.pos.copy(this.tmp).add(this.offEased)
+      // the end: the spring takes it from here, at this speed, onto the mark
+      if (p.s >= p.len) { this.path = null; this.goalSetAt = -9 }
+    } else {
+      // ── the body: an underdamped spring toward the aim, capped in thrust and speed ──
+      // ω from the stopping distance at cruise: a = ω²·d, and the run decelerates over d ≈ v²/(2a)
+      const omega = Math.sqrt(2 * this.accel / Math.max(20, this.cruise)) * 1.15
+      const zeta = 0.72
+      this.tmp.copy(this.aim).sub(this.pos)
+      this.acc.copy(this.tmp).multiplyScalar(omega * omega).addScaledVector(this.vel, -2 * zeta * omega)
+      // the thrust ramps in after the pilot has looked at the new mark
+      const thrust = this.goalSetAt < 0 ? 1 : clamp((since - this.hesitate) / 0.35, 0, 1)
+      const aMax = this.accel * (0.15 + 0.85 * thrust * thrust)
+      if (this.acc.length() > aMax) this.acc.setLength(aMax)
+      this.vel.addScaledVector(this.acc, dt)
+      if (this.vel.length() > this.cruise) this.vel.setLength(this.cruise)
+      this.pos.addScaledVector(this.vel, dt)
+    }
+    this.lean.lerp(this.acc, 1 - Math.exp(-dt * 10))
+
+    // ── the gimbal: rate-limited springs on yaw and pitch, so a big pan swings past and comes back — but a target that is
+    // itself moving (the island going by as the drone passes it) is tracked at its own rate, so the frame is not left behind ──
     this.tmp.copy(this.lookGoal).sub(this.pos)
     const dist = Math.max(1e-3, this.tmp.length())
     this.tmp.divideScalar(dist)
     const wantYaw = Math.atan2(this.tmp.z, this.tmp.x)
     const wantPitch = Math.asin(clamp(this.tmp.y, -1, 1))
-    const gw = 4.2, gz = 0.62
+    const wantYawRate = clamp(wrap(wantYaw - this.wantYawPrev) / Math.max(1e-3, dt), -2, 2)
+    const wantPitchRate = clamp((wantPitch - this.wantPitchPrev) / Math.max(1e-3, dt), -2, 2)
+    this.wantYawPrev = wantYaw
+    this.wantPitchPrev = wantPitch
+    const gw = 4.2, gz = 0.78
     const yawErr = wrap(wantYaw - this.yaw)
-    this.yawVel += (yawErr * gw * gw - this.yawVel * 2 * gz * gw) * dt
+    this.yawVel += (yawErr * gw * gw - (this.yawVel - wantYawRate) * 2 * gz * gw) * dt
     this.yawVel = clamp(this.yawVel, -2.6, 2.6)
     this.yaw = wrap(this.yaw + this.yawVel * dt)
     const pitchErr = wantPitch - this.pitch
-    this.pitchVel += (pitchErr * gw * gw - this.pitchVel * 2 * gz * gw) * dt
+    this.pitchVel += (pitchErr * gw * gw - (this.pitchVel - wantPitchRate) * 2 * gz * gw) * dt
     this.pitchVel = clamp(this.pitchVel, -2.0, 2.0)
     this.pitch = clamp(this.pitch + this.pitchVel * dt, -1.45, 1.45)
 
     // ── the body leans: banking into lateral acceleration, a dip under forward thrust ──
     this.dir.set(Math.cos(this.pitch) * Math.cos(this.yaw), Math.sin(this.pitch), Math.cos(this.pitch) * Math.sin(this.yaw))
     this.right.crossVectors(this.dir, UP).normalize()
-    const lateral = this.acc.dot(this.right)
-    const forward = this.acc.dot(this.dir)
-    const rollGoal = clamp(-lateral * this.bank, -0.28, 0.28) + Math.sin(t * 0.8) * 0.006 * (1 + k)
+    const lateral = this.lean.dot(this.right)
+    const forward = this.lean.dot(this.dir)
+    const rollGoal = clamp(-lateral * this.bank, -0.1, 0.1) + Math.sin(t * 0.8) * 0.006 * (1 + k)
     this.roll += (rollGoal - this.roll) * (1 - Math.exp(-dt * 3.2))
     const dip = clamp(-forward * 0.0012, -0.06, 0.06)
 
