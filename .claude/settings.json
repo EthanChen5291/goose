@@ -1,9 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ls /Users/ethanchen/Documents/GitHub/key-dash/assets/images/hitmarker*)",
-      "Bash(find /Users/ethanchen/Documents/GitHub/key-dash -name \"*.pyc\" -delete)",
-      "Bash(find /Users/ethanchen/Documents/GitHub/key-dash -name \"__pycache__\" -type d -exec rm -rf {} +)",
+      "Bash(ls /Users/ethanchen/Documents/GitHub/goose/assets/images/hitmarker*)",
+      "Bash(find /Users/ethanchen/Documents/GitHub/goose -name \"*.pyc\" -delete)",
+      "Bash(find /Users/ethanchen/Documents/GitHub/goose -name \"__pycache__\" -type d -exec rm -rf {} +)",
       "Bash(xargs -I {} dirname {})",
       "Bash(xargs -I {} basename {})"
     ]
