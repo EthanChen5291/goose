@@ -32,13 +32,9 @@ DEFAULTS: dict = {
 
 
 def config_dir() -> str:
-    try:
-        import platformdirs
-        base = platformdirs.user_config_dir("Noki", "Noki")
-    except Exception:
-        base = os.path.join(os.path.expanduser("~"), ".noki")
-    os.makedirs(base, exist_ok=True)
-    return base
+    """Where settings.json lives.  See userdirs.py."""
+    from userdirs import config_dir as _dir
+    return _dir()
 
 
 def settings_path() -> str:

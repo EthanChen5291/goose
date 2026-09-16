@@ -3,9 +3,10 @@ charting — turns a song and a word list into a chart (a list of CharEvents),
 deterministically, with a disk cache keyed by song, words, difficulty and
 generator version.
 
-``build_chart`` is the only entry point the game uses.  Today it runs the
-Skeleton & Cells engine (``charting.engine``) and falls back to the legacy
-slot builder if the engine raises, so a bad chart never blocks play.
+``build_chart`` is the only entry point the game uses, and it runs the Skeleton
+& Cells engine (``charting.engine``).  There is no fallback: an engine that
+raises is a bug to see, not to paper over with a worse chart.  The generator it
+replaced is in ``legacy/``, run by nothing.
 """
 from __future__ import annotations
 
@@ -18,18 +19,15 @@ from dataclasses import asdict
 from game import constants as C
 from game import models as M
 
-GENERATOR_VERSION = "sc-2.0"   # sections (patterns, anchors, extra holds) + melody-weighted slots
+GENERATOR_VERSION = "sc-2.3"   # + non-octave pulse repair (a chart written against the old grid
+                               # is not a chart of the same song), continuous Duo phrases,
+                               # chords that finally survive the spacing pass, and the
+                               # playfield stages: one-circle phrases and column marks
 
 
 def _cache_dir() -> str:
-    try:
-        import platformdirs
-        base = platformdirs.user_cache_dir("Noki", "Noki")
-    except Exception:
-        base = os.path.join(os.path.expanduser("~"), ".noki", "cache")
-    p = os.path.join(base, "charts")
-    os.makedirs(p, exist_ok=True)
-    return p
+    from userdirs import cache_dir
+    return cache_dir("charts")
 
 
 def prune_stale_caches() -> None:

@@ -112,8 +112,14 @@ class RhythmManager:
         self._hold_press_time: float = 0.0
         self._hold_judgment: str = 'ok'
         self._hold_release_grace = 0.12
+        # A key that comes back up within this of going down is a fumble, not a
+        # release: a bounce or a finger resettling should not break a hold the
+        # player has only just started.  It is short enough that it can never
+        # stand in for holding a note, since the shortest hold is about 0.35 s.
+        self._hold_settle = 0.12
         # anchors: holds the other hand plays through — up to one per hand (a chord is two)
         self._anchors: list[M.CharEvent] = []
+        self._anchor_press: dict[int, float] = {}      # id(event) → when it went down
         self._anchor_judgments: dict[int, str] = {}
         self._anchor_judgment: str = 'ok'                 # of the anchor started last
         self.anchor_results: list[dict] = []              # anchors that ended by time since last read
@@ -250,6 +256,7 @@ class RhythmManager:
         if ev.section_kind == "anchor" and ev.hold_duration > 0:
             self._anchors = [a for a in self._anchors if a.lane != ev.lane] + [ev]
             self._anchor_judgments[id(ev)] = judgment
+            self._anchor_press[id(ev)] = elapsed
             self._anchor_judgment = judgment
             ev.hit = True
             self.char_event_idx += 1
@@ -284,6 +291,8 @@ class RhythmManager:
         held = next((a for a in self._anchors if released_char.lower() == a.char.lower()), None)
         if held is not None:
             elapsed = self.now()
+            if elapsed - self._anchor_press.get(id(held), -1e9) < self._hold_settle:
+                return {}                       # a fumble on the way down, not a release
             end = held.timestamp + held.hold_duration
             if elapsed >= end - held.hold_duration * self._hold_release_grace:
                 return self._complete_anchor(held)
@@ -296,6 +305,8 @@ class RhythmManager:
         if released_char.lower() != self._active_hold.char.lower():
             return {}
         elapsed = self.now()
+        if elapsed - self._hold_press_time < self._hold_settle:
+            return {}                           # a fumble on the way down, not a release
         hold_end_time = self._active_hold.timestamp + self._active_hold.hold_duration
         required_time = hold_end_time - self._active_hold.hold_duration * self._hold_release_grace
         if elapsed >= required_time:

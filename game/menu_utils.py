@@ -214,7 +214,7 @@ def _fetch_lyrics_words(artist: str, title: str) -> list[str]:
             + "/"
             + urllib.parse.quote(title.strip())
         )
-        req = urllib.request.Request(url, headers={"User-Agent": "KeyDash/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "goose/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
         lyrics = data.get("lyrics", "")

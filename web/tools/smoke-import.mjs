@@ -11,7 +11,7 @@ import { mkdirSync } from 'node:fs'
 const BASE = process.env.BASE ?? 'http://localhost:4173'
 const SHOTS = process.env.SHOTS ?? '/tmp/shots'
 const DIR = process.env.IMPORT_DIR
-if (!DIR) throw new Error('set IMPORT_DIR to the folder holding the mp3 + .nokichart.json')
+if (!DIR) throw new Error('set IMPORT_DIR to the folder holding the mp3 + .goosechart.json')
 mkdirSync(SHOTS, { recursive: true })
 
 const browser = await chromium.launch({
@@ -42,7 +42,7 @@ await page.waitForTimeout(400)
 console.log('bad chart file ->', JSON.stringify(await page.locator('#imp-err').textContent()))
 
 // now the real pair
-await page.locator('#imp-chart').setInputFiles(`${DIR}/test song.nokichart.json`)
+await page.locator('#imp-chart').setInputFiles(`${DIR}/test song.goosechart.json`)
 await page.locator('#imp-go').click()
 await page.waitForSelector('.srow.imported', { timeout: 8000 })
 console.log('imported:', (await page.locator('.srow.imported span').textContent()).trim())

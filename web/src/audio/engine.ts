@@ -51,14 +51,25 @@ export class AudioEngine {
    * Schedule the song to begin at `when` (an AudioContext time), or as soon as
    * possible if that moment has already passed.  Returns the time it will actually
    * start, which is what the ChartClock rebases on.
+   *
+   * `loop` repeats the buffer forever — `true` for the whole of it, or a region
+   * of it.  The repeat is the hardware's, not a timer's: there is no gap at the
+   * seam and nothing to drift.
    */
-  playMusic(url: string, when?: number, offset = 0): number {
+  playMusic(url: string, when?: number, offset = 0, loop?: true | { start: number; end: number }): number {
     const buf = this.buffers.get(url)
     if (!buf) throw new Error(`not loaded: ${url}`)
     this.stopMusic()
     const src = this.ctx.createBufferSource()
     src.buffer = buf
     src.connect(this.musicGain)
+    if (loop) {
+      src.loop = true
+      if (loop !== true) {
+        src.loopStart = loop.start
+        src.loopEnd = Math.min(loop.end, buf.duration)
+      }
+    }
     const at = Math.max(when ?? this.ctx.currentTime, this.ctx.currentTime)
     src.start(at, offset)
     this.source = src

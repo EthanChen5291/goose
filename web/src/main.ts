@@ -61,10 +61,20 @@ const HITSOUND = 'audio/sfx/hitsound.mp3'
 const SFX = ['slap', 'slap2', 'whip', 'peck', 'honk', 'hurt', 'enemy_hit', 'miss', 'perfect', 'word',
              'combo', 'jump', 'slide', 'ui_move', 'ui_click', 'pause', 'win', 'lose',
              'whoosh', 'rock_break', 'uppercut', 'thud', 'splat', 'windup', 'megahonk', 'shift_tick',
-             'shift_go', 'boom', 'whiff', 'run_steps', 'menace', 'glass', 'slash', 'kanji', 'flash_hit',
+             'shift_go', 'boom', 'whiff', 'menace', 'glass', 'slash', 'kanji', 'flash_hit',
              'crash_zoom', 'text_tick', 'fight_card', 'throw_far', 'eye_glow', 'down_card',
              'bodyslam', 'dash', 'bat', 'smash', 'flip', 'lash', 'roll', 'whip_boom']
-const sfxUrl = (n: string) => `audio/sfx/${n}.wav`
+const sfxUrl = (n: string, ext = 'wav') => `audio/sfx/${n}.${ext}`
+/** the goose's footsteps: three recordings (assets/audios/effects), not synthesised */
+const RUN_STEPS = ['gooserun1', 'gooserun2', 'gooserun3'].map((n) => sfxUrl(n, 'mp3'))
+/**
+ * The menu theme: 165 bpm, and cut by tools/export_web.py to a whole 72 bars
+ * that open on its first beat — the drop — with the room tone before it and the
+ * silence after it gone.  So the file is the loop: it repeats end to end, in
+ * time, and there is nothing to sit through before the title lands.
+ */
+const THEME = 'audio/theme.mp3'
+const THEME_BEAT = 60 / 165
 const TIERS: Tier[] = ['journey', 'classic', 'master', 'demon']
 const MODES: Mode[] = ['words', 'letters']
 
@@ -93,12 +103,16 @@ let moviePromise: Promise<GooseMovie> | null = null
 const CUES: Record<string, [string, number]> = {
   jump: ['jump', 0.5], land: ['thud', 0.3], whoosh: ['whoosh', 0.5], flash: ['flash_hit', 0.6],
   crash_zoom: ['crash_zoom', 0.7], trap: ['whoosh', 0.6], thud: ['thud', 0.6], honk: ['honk', 0.45],
-  run_steps: ['run_steps', 0.4], slap: ['slap', 0.7], splat: ['splat', 0.6], throw_far: ['throw_far', 0.6],
+  slap: ['slap', 0.7], splat: ['splat', 0.6], throw_far: ['throw_far', 0.6],
   beam: ['windup', 0.5], ufo: ['whoosh', 0.6], menace: ['menace', 0.6],
 }
 function getMovie(): Promise<GooseMovie> {
   moviePromise ??= loadManifest().then((m) => gooseMovie(m)).then((mv) => {
-    mv.onCue = (name) => { const c = CUES[name]; if (c) ui(c[0], c[1]) }
+    mv.onCue = (name) => {
+      if (name === 'run_steps') { runSteps(0.5); return }
+      const c = CUES[name]
+      if (c) ui(c[0], c[1])
+    }
     return mv
   })
   return moviePromise
@@ -109,6 +123,76 @@ let titleAt = 0
 function ui(name: string, vol = 0.6, delay = 0): void {
   void audio.load(sfxUrl(name)).then(() => audio.playSfx(sfxUrl(name), audio.ctx.currentTime + delay, vol)).catch(() => null)
 }
+/** where the footsteps have got to: the next recording, and when the one playing ends */
+let runStep = 0
+let runStepsUntil = 0
+/**
+ * A run of footsteps, taking the three recordings in turn.
+ *
+ * The cue fires per step — every 0.11s in the map rush, and on a timer under the
+ * loader — but each recording is already a couple of seconds of running, so a
+ * call lands only once the last one has played out.  They chain, they never pile up.
+ */
+function runSteps(vol = 0.5): void {
+  if (audio.ctx.currentTime < runStepsUntil) return
+  const url = RUN_STEPS[runStep++ % RUN_STEPS.length]
+  runStepsUntil = audio.ctx.currentTime + 0.25   // holds the gate while it decodes
+  void audio.load(url).then((buf) => {
+    audio.playSfx(url, undefined, vol)
+    runStepsUntil = audio.ctx.currentTime + buf.duration - 0.06
+  }).catch(() => { runStepsUntil = 0 })
+}
+/** the AudioContext time the theme's own zero sits at, or null while it is silent */
+let themeAt: number | null = null
+/** true while a listener is waiting for the gesture that lets the page have sound */
+let gestureArmed = false
+/** Seconds into the theme, or null while it is not playing. */
+function themeSince(): number | null {
+  return themeAt === null ? null : audio.ctx.currentTime - themeAt
+}
+/**
+ * Start the theme, looping.
+ *
+ * A page that has not been touched yet is not allowed to make a sound, and
+ * `unlock` cannot change that on its own: all it can do is ask, and the context
+ * stays suspended until the first gesture.  So when it is refused, the next
+ * pointer or key press tries again, and the intro waits on this clock rather
+ * than on one of its own — the title lands on the drop whenever the drop is.
+ */
+async function startTheme(): Promise<boolean> {
+  if (audio.ctx.state !== 'running') {
+    // `resume()` on a page nobody has touched yet never settles in Chrome, so it
+    // is asked, never awaited: the gesture listener is what actually gets sound
+    void audio.unlock().catch(() => null)
+    armGesture()
+    return false
+  }
+  try {
+    await audio.load(THEME)
+  } catch { return false }
+  // the menus never opened a run, so nothing else has told the mixer the setting
+  audio.musicVolume = Number(settings.music_volume ?? 0.8)
+  themeAt = audio.playMusic(THEME, undefined, 0, true)
+  return true
+}
+function armGesture(): void {
+  if (gestureArmed) return
+  gestureArmed = true
+  const events = ['pointerdown', 'keydown', 'touchstart']
+  const go = (): void => {
+    for (const ev of events) window.removeEventListener(ev, go)
+    gestureArmed = false
+    // called from inside the gesture, so this resume is the one that takes
+    void audio.ctx.resume().then(() => startTheme()).catch(() => null)
+  }
+  for (const ev of events) window.addEventListener(ev, go)
+}
+/** The menus all play the theme; a run takes the music over and gives it back. */
+function ensureTheme(): void {
+  if (themeAt === null) void startTheme()
+}
+/** What the screens need of the theme: its clock, and the grid it runs on. */
+const themeClock = { since: themeSince, beat: THEME_BEAT }
 let customSongs: CustomSong[] = []
 let objectUrls: string[] = []
 let selected: SongEntry | null = null
@@ -122,11 +206,14 @@ boot()
 async function boot(): Promise<void> {
   app.innerHTML = '<div class="screen"><p class="loading">Loading…</p></div>'
   index = await (await fetch('index.json')).json()
+  // decoding is allowed while the context is shut, so the theme is ready to go
+  // the moment the page is touched
+  void audio.load(THEME).catch(() => null)
   await refreshCustom()
   selected = allSongs()[0] ?? null
   for (const ev of ['hashchange', 'popstate']) window.addEventListener(ev, () => { if (atGallery()) void openGallery() })
   if (atGallery()) { void openGallery(); return }
-  renderTitle()
+  renderTitle(true)
 }
 
 /** the gallery's route: /gallery, or #gallery for a build served without a history fallback */
@@ -167,7 +254,8 @@ async function openGallery(): Promise<void> {
   const px = await ensurePixi()
   pxAssets = await PxAssets.load()
   canvas ??= new PixelCanvas(px.renderer)
-  await Promise.all(SFX.map((n) => audio.load(sfxUrl(n)).catch(() => null)))
+  await Promise.all([...SFX.map((n) => audio.load(sfxUrl(n))), ...RUN_STEPS.map((u) => audio.load(u))]
+    .map((p) => p.catch(() => null)))
   px.stage.removeChildren()
   px.stage.addChild(canvas.view)
   canvas.world.removeChildren()
@@ -212,7 +300,8 @@ function showMenu(built: { el: HTMLElement; stop: () => void }): void {
   app.replaceChildren(built.el)
 }
 
-function renderTitle(): void {
+/** `intro` opens the session: black, the pickup, the wordmark typed onto the drop */
+function renderTitle(intro = false): void {
   showMenu(buildTitle({
     onPlay: () => { titleAt = 0; renderMenu() },
     onImport: () => { titleAt = 1; openImport(renderTitle) },
@@ -220,7 +309,10 @@ function renderTitle(): void {
     onMove: () => ui('ui_move', 0.5),
     movie: getMovie(),
     at: titleAt,
+    music: themeClock,
+    intro,
   }))
+  ensureTheme()
 }
 
 /** the import panel over whatever is on screen; `back` rebuilds that screen when it closes */
@@ -276,6 +368,7 @@ function renderMenu(): void {
   })
   liveSelect = built
   showMenu(built)
+  ensureTheme()
 }
 
 /**
@@ -295,8 +388,8 @@ async function enterLevel(songEntry: SongEntry, chartEntry: ChartEntry): Promise
 async function play(songEntry: SongEntry, chartEntry: ChartEntry): Promise<void> {
   // black, and the goose running, for at least a beat and a half
   const loading = buildLoading(() => {
-    ui('run_steps', 0.5)
-    const id = window.setInterval(() => ui('run_steps', 0.5), 1500)
+    runSteps(0.5)
+    const id = window.setInterval(() => runSteps(0.5), 250)
     return () => window.clearInterval(id)
   })
   showMenu(loading)
@@ -320,6 +413,7 @@ async function play(songEntry: SongEntry, chartEntry: ChartEntry): Promise<void>
     // the hitsound is tiny and shared by every run; a failure here is not fatal
     audio.load(HITSOUND).catch(() => null),
     ...SFX.map((n) => audio.load(sfxUrl(n)).catch(() => null)),
+    ...RUN_STEPS.map((u) => audio.load(u).catch(() => null)),
   ])
 
   await loading.done
@@ -365,6 +459,8 @@ async function play(songEntry: SongEntry, chartEntry: ChartEntry): Promise<void>
   ;(window as unknown as { __chart: ChartFile }).__chart = chart
   ;(window as unknown as { __pxCanvas: PixelCanvas | null }).__pxCanvas = pixelRun ? canvas : null
   session.setHitsound(HITSOUND)
+  // the run's own music replaces the theme: `playMusic` stops whatever is playing
+  themeAt = null
   session.start()
   lastT = performance.now()
   cancelAnimationFrame(raf)

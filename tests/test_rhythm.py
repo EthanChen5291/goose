@@ -134,3 +134,113 @@ def test_copy_keeps_every_field():
     c = rm.beat_map[0]
     assert (c.repeat_group_id, c.repeat_iter, c.weight, c.lane, c.word_id) == (3, 2, 4, 0, 9)
     assert abs(c.timestamp - 1.5) < 1e-9
+
+
+# --- window boundaries -------------------------------------------------------
+# A note at timestamp 0 with no lead-in is the one place a press can land *exactly*
+# on a window edge: `press - 0.0` is the press, with no rounding in between.  Every
+# window comparison in the judgment core is inclusive of its edge, and the web port
+# mirrors these three tests exactly (web/tests/rhythm.test.ts), because a tape of
+# real presses can never reach a boundary to prove it.
+import math
+
+
+def _one_note(ch="a"):
+    return [M.CharEvent(char=ch, timestamp=0.0, word_text=ch, char_idx=0,
+                        beat_position=0, section=0, word_id=1)]
+
+
+def test_window_edges_are_inclusive():
+    c = Clock()
+    rm = RhythmManager(_one_note(), bpm=120, clock=c)
+    c.t = rm.timing_windows["perfect"]
+    assert rm.check_input("a")["judgment"] == "perfect"
+
+
+def test_just_past_an_edge_falls_to_the_next_window():
+    for edge, expect in (("perfect", "good"), ("good", "ok")):
+        c = Clock()
+        rm = RhythmManager(_one_note(), bpm=120, clock=c)
+        c.t = math.nextafter(rm.timing_windows[edge], 1.0)
+        assert rm.check_input("a")["judgment"] == expect
+
+
+def test_the_edges_are_symmetric_about_the_note():
+    c = Clock()
+    rm = RhythmManager(_one_note(), bpm=120, clock=c)
+    c.t = -rm.timing_windows["good"]
+    r = rm.check_input("a")
+    assert r["judgment"] == "good" and r["offset"] < 0
+
+
+def test_a_press_exactly_on_the_ok_edge_is_ok_not_too_early():
+    c = Clock()
+    rm = RhythmManager(_one_note(), bpm=120, clock=c)
+    c.t = -rm.ok_window_for(rm.beat_map[0])
+    assert rm.check_input("a")["judgment"] == "ok"
+
+
+# ── chords: two anchors due together, one per hand ─────────────────────────
+# The charting engine's spacing pass used to drop the second of the pair, so no
+# chart ever contained a chord and none of this ran.  Both cores have always had
+# the code; these pin the behaviour now that charts really produce them.
+def _chord(t=1.0, dur=1.0, a="f", b="j"):
+    from game import keyboard as KB
+    evs = [M.CharEvent(char=c, timestamp=t, word_text=c, char_idx=0, beat_position=0, section=0,
+                       word_id=i + 1, hold_duration=dur, section_kind="anchor", lane=KB.lane_of(c))
+           for i, c in enumerate((a, b))]
+    evs.append(M.CharEvent(char="", timestamp=t + dur + 0.5, word_text="", char_idx=-1,
+                           beat_position=0, section=0, is_rest=True))
+    return evs
+
+
+def test_chord_may_be_pressed_in_either_order():
+    c = Clock()
+    rm = RhythmManager(_chord(), bpm=120, clock=c)
+    c.t = 1.0
+    assert rm.check_input("j")["judgment"] == "anchor_started"   # the later of the pair, first
+    assert rm.check_input("f")["judgment"] == "anchor_started"
+    assert len(rm._anchors) == 2                                  # both hands are down
+
+
+def test_chord_does_not_clamp_its_partners_window():
+    """Two notes at the same time would otherwise each shrink the other's window to nothing."""
+    rm = RhythmManager(_chord(), bpm=120, clock=Clock())
+    for e in rm.beat_map[:2]:
+        assert rm.ok_window_for(e) == rm.timing_windows["ok"]
+
+
+# ── holds: a bounce on the way down is not a release ───────────────────────
+def _hold_chart(dur=1.0, t=1.0, ch="a"):
+    return [
+        M.CharEvent(char=ch, timestamp=t, word_text=ch, char_idx=0, beat_position=0,
+                    section=0, word_id=1, hold_duration=dur),
+        M.CharEvent(char="", timestamp=t + dur + 0.5, word_text="", char_idx=-1,
+                    beat_position=0, section=0, is_rest=True),
+    ]
+
+
+def test_a_bounce_right_after_the_press_does_not_break_a_hold():
+    c = Clock()
+    rm = RhythmManager(_hold_chart(), bpm=120, clock=c)
+    c.t = 1.0
+    assert rm.check_input("a")["judgment"] == "hold_started"
+    c.t = 1.05                                  # the key comes back up at once
+    assert rm.on_key_release("a") == {}
+    assert rm._active_hold is not None          # still holding
+    c.t = 1.40                                  # a real release, and far too early
+    assert rm.on_key_release("a")["judgment"] == "hold_broken"
+
+
+def test_the_same_grace_covers_an_anchor():
+    from game import keyboard as KB
+    evs = _hold_chart(dur=1.5, ch="f")
+    evs[0].section_kind = "anchor"
+    evs[0].lane = KB.lane_of("f")
+    c = Clock()
+    rm = RhythmManager(evs, bpm=120, clock=c)
+    c.t = 1.0
+    assert rm.check_input("f")["judgment"] == "anchor_started"
+    c.t = 1.06
+    assert rm.on_key_release("f") == {}
+    assert len(rm._anchors) == 1

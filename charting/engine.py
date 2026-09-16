@@ -33,6 +33,7 @@ import random
 from dataclasses import dataclass, replace
 
 from game import constants as C
+from game import keyboard as KB
 from game import models as M
 from game.rhythm import calculate_lead_in
 from . import skeleton as SK
@@ -90,7 +91,7 @@ TIERS = {
 
 
 # ── skeleton cache ────────────────────────────────────────────────────────
-SKELETON_VERSION = "v10"     # bump when build_skeleton's output changes; older files are pruned
+SKELETON_VERSION = "v12"     # bump when build_skeleton's output changes; older files are pruned
 
 
 def _skeleton_cache_path(song_path: str, expected_bpm: int | None) -> str:
@@ -452,7 +453,9 @@ def _space_sections(events: list[M.CharEvent], min_gap: float) -> list[M.CharEve
     Inside a word the onset snapping can pull two letters together: the later one is nudged
     forward.  Where sections meet, the later note's whole word is dropped instead, so no word
     is left with a missing letter.  A grace note and its main note are one gesture and are
-    left alone.
+    left alone, and so is a chord: two anchors due together are one gesture for two hands, and
+    dropping the second is what kept chords out of every chart ever generated even though both
+    judgment cores have always known how to play them.
     """
     floor = min_gap * 0.75
     drop: set[int] = set()
@@ -461,6 +464,10 @@ def _space_sections(events: list[M.CharEvent], min_gap: float) -> list[M.CharEve
         if e.is_rest or not e.char or e.word_id in drop:
             continue
         if e.section_kind == "grace" or (prev is not None and prev.section_kind == "grace"):
+            prev = e
+            continue
+        if prev is not None and e.section_kind == "anchor" and prev.section_kind == "anchor" \
+                and abs(e.timestamp - prev.timestamp) < 0.06 and KB.hand_of(e.char) != KB.hand_of(prev.char):
             prev = e
             continue
         if prev is not None and e.timestamp - prev.timestamp < floor:
@@ -593,8 +600,9 @@ def chart_song(level: M.Level, song_path: str, progress=None) -> dict:
         events.extend(d_events)
     focus = focus_letters(level.word_bank)
     for ph in special:
-        if ph.kind == "pattern":
-            p_events = plan_pattern(sk, ph, tier.key, focus, rng, next_word_id, vibes, tier.min_gap, tier.finest)
+        if ph.kind in ("pattern", "onecircle"):
+            p_events = plan_pattern(sk, ph, tier.key, focus, rng, next_word_id, vibes,
+                                    tier.min_gap, tier.finest, kind=ph.kind)
         else:
             p_events = plan_anchor(sk, ph, tier, focus, rng, next_word_id, vocab, vibes,
                                    fit_words, emit_events, lambda sk_, tier_, vibes_: build_cells(sk_, tier_, vibes_, plans))
@@ -628,5 +636,12 @@ def chart_song(level: M.Level, song_path: str, progress=None) -> dict:
                          {"holds": ph.extra.get("holds", []), "voices": ph.extra.get("voices", [])} if ph.kind == "anchor" else {}]
                         for ph in phrases],
             "layers": _layers_meta(plans),
+            # where the playfield itself changes shape.  A phrase kind decides the
+            # notes; a stage decides where the hit circles are, and the two are not
+            # the same thing — `columns` leaves an ordinary words phrase alone.
+            "stages": [[round(ph.t0, 3), round(ph.t1, 3),
+                        ph.extra.get("stage") or ("onecircle" if ph.kind == "onecircle" else "")]
+                       for ph in phrases
+                       if ph.extra.get("stage") or ph.kind == "onecircle"],
             "duets": [[s.t0, s.t1, s.shape, s.bar0, s.bar1] for s in spans]}
     return {"song": song, "events": events, "lead_in": lead_in, "meta": meta, "skeleton": sk}

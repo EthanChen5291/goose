@@ -7,7 +7,7 @@ starts.  A browser cannot do that.  librosa, scipy and numba are not going to
 run in a tab, and the honest alternatives are a charting server or nothing.
 
 So the web client plays charts rather than making them, and this is the seam:
-run it on any audio file and it writes `<name>.nokichart.json` next to it — the
+run it on any audio file and it writes `<name>.goosechart.json` next to it — the
 chart, the beat grid and the song's own metadata in one file.  Drop that file
 and the audio into the web app's "Add a song" screen and it plays like any
 shipped song.
@@ -96,7 +96,7 @@ def main() -> None:
             print(f"{tier}|{mode}: {r['meta'].get('notes')} notes in {took:.1f}s")
 
     out = args.out or os.path.join(os.path.dirname(audio),
-                                   os.path.splitext(os.path.basename(audio))[0] + ".nokichart.json")
+                                   os.path.splitext(os.path.basename(audio))[0] + ".goosechart.json")
     with open(out, "w", encoding="utf-8") as f:
         json.dump(bundle, f)
     mb = os.path.getsize(out) / 1e6

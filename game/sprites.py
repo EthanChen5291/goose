@@ -23,14 +23,9 @@ _IMG_DIR = os.path.join(_ROOT, "assets", "images")
 
 
 def cache_dir(*parts: str) -> str:
-    try:
-        import platformdirs
-        base = platformdirs.user_cache_dir("Noki", "Noki")
-    except Exception:
-        base = os.path.join(os.path.expanduser("~"), ".noki", "cache")
-    p = os.path.join(base, *parts)
-    os.makedirs(p, exist_ok=True)
-    return p
+    """Where the scaled sprite sheets are kept between runs.  See userdirs.py."""
+    from userdirs import cache_dir as _dir
+    return _dir(*parts)
 
 
 # ── fonts ─────────────────────────────────────────────────────────────────

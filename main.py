@@ -173,7 +173,22 @@ SONG_NAMES = [
     "Malo Kart.mp3",
     "tidalwave.mp3",
     "hustle.mp3",
-    "what is love?.mp3"
+    "what is love?.mp3",
+    "Chaos Construct.mp3",
+    "Megalovania.mp3",
+    "Miley Cyrus - Party In The U.S.A. (Official Video).mp3",
+    "StoryOfMoon.wav",
+    "Thee Sacred Souls - Can I Call You Rose.mp3",
+    "Toby Fox - THE WORLD REVOLVING.mp3",
+    "Waltz.mp3",
+    "empty space - Flow 1.wav",
+    "jester - Flow 1.wav",
+    "noki_bamsam_file.wav",
+    "noki_finalfight2v1 - Flow 1.wav",
+    "noki_heartmetoo_file.wav",
+    "noki_lastmeow_file.wav",
+    "noki_ramjam_file.wav",
+    "noki_strangeuwa_file.wav"
 ]
 
 WORD_BANK_1 = ["cat", "test", "me", "rhythm", "beat", "fish", "moon", "derp", "noki", "yeah"]
@@ -184,7 +199,7 @@ def main():
     pygame.init()
     info = pygame.display.Info()
     screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.RESIZABLE)
-    pygame.display.set_caption("Key Dash")
+    pygame.display.set_caption("goose")
     # macOS clamps the window under the menu bar after creation: let that settle so
     # every screen measures the real surface
     for _ in range(3):

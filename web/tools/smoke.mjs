@@ -47,7 +47,10 @@ await page.locator('#play').click()
 await page.waitForSelector('canvas', { timeout: 30000 })
 console.log('canvas up')
 
-// let the count-in run, then screenshot the falling notes
+// the session only goes on the window once the chart, the audio and the pixel
+// kit are all in, which is well past the click; wait for it rather than guess,
+// then let the count-in run and screenshot the falling notes
+await page.waitForFunction(() => Boolean(window.__session), null, { timeout: 30000 })
 await page.waitForTimeout(1800)
 await page.screenshot({ path: `${SHOTS}/${MODE}-2-countin.png` })
 
@@ -152,22 +155,26 @@ const live = await page.evaluate(() => {
 console.log('run state:', JSON.stringify(live))
 
 if (!live.finished) {
-  // pause, resume, and leave through the overlay
+  // pause, resume, and leave through the overlay.  The pause menu is the Emi
+  // kit's own button bars, found by their labels — they carry no ids.
+  const pauseBtn = (label) => page.locator('.pause .pbtn', { hasText: label })
   await page.keyboard.press('Escape')
-  await page.waitForSelector('#resume', { timeout: 5000 })
+  await pauseBtn('RESUME').waitFor({ timeout: 5000 })
   console.log('pause overlay: shown')
   await page.screenshot({ path: `${SHOTS}/${MODE}-4-pause.png` })
-  await page.locator('#resume').click()
+  await pauseBtn('RESUME').click()
   await page.waitForTimeout(300)
-  console.log('resumed:', (await page.locator('#resume').count()) === 0)
+  console.log('resumed:', (await page.locator('.pause').count()) === 0)
   await page.keyboard.press('Escape')
-  await page.locator('#quit').click()
+  await pauseBtn('QUIT').waitFor({ timeout: 5000 })
+  await pauseBtn('QUIT').click()
 } else {
   console.log('run already over' + (live.failed ? ' (failed: HP hit zero)' : ''))
 }
 await page.waitForSelector('#back', { timeout: 15000 })
-const finalScore = await page.locator('.score').textContent()
-console.log('results:', finalScore, '|', await page.locator('.best').textContent())
+await page.waitForSelector('.px-score', { timeout: 15000 })
+const finalScore = await page.locator('.px-score').textContent()
+console.log('results:', finalScore, '|', await page.locator('.px-best').textContent())
 await page.screenshot({ path: `${SHOTS}/${MODE}-5-results.png` })
 
 // the typing coach, opened with Tab
@@ -193,7 +200,7 @@ console.log('song card:', card.replace(/\s+/g, ' ').trim())
 
 // settings: change one and check it sticks across a reload.  It lives on the
 // title screen, where the desktop build keeps it, so the arrow comes first.
-await page.locator('.back-arrow').click()
+await page.locator('.map-back').click()
 await page.waitForSelector('#settings', { timeout: 5000 })
 await page.locator('#settings').click()
 await page.waitForSelector('#set-speed_mult', { timeout: 5000 })

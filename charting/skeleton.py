@@ -294,12 +294,131 @@ def hit_time(p: Point, layer: str | None = None) -> float:
     return p.t_hit if p.t_hit >= 0 else p.t
 
 
+# Beat periods to test once the tracker has settled.  ×2 and ÷2 are left out: they
+# are the other metrical levels of the same reading, the two-beat peak is the tallest
+# one in almost any 4/4 song, and the octave is already chosen deliberately below.
+_PULSE_CANDS = {"ours": 1.0, "x4/3": 4 / 3, "x2/3": 2 / 3}
+# how much better a beat divided in three has to fit before the grid is rebuilt
+_PULSE_MARGIN = 1.15
+
+
+def _pulse_prominence(acf: np.ndarray, lag_frames: float) -> float:
+    """Height of the autocorrelation peak at one lag, against its own neighbourhood.
+
+    Autocorrelation decays with lag by itself, so a bare value would always favour
+    the shorter period.  Scoring a lag against the local average around it takes the
+    decay out and leaves only "is there a peak here".
+    """
+    L = int(round(lag_frames))
+    if L < 4 or L + 40 >= len(acf):
+        return 0.0
+    ring = np.concatenate([acf[max(0, L - 40):max(0, L - 8)], acf[L + 8:L + 40]])
+    return float(acf[max(0, L - 3):L + 4].max() / (ring.mean() or 1e-9))
+
+
+def best_pulse(env: np.ndarray, frames_per_beat: float) -> tuple[str, dict[str, float]]:
+    """Which of ``_PULSE_CANDS`` the song actually repeats on, and every score."""
+    import librosa
+    acf = librosa.autocorrelate(env - env.mean(), max_size=max(8, len(env) // 2))
+    sc = {k: _pulse_prominence(acf, frames_per_beat * m) for k, m in _PULSE_CANDS.items()}
+    return max(sc, key=sc.get), sc
+
+
+# A hit counts as "on" a line inside this fraction of the line spacing.  Relative,
+# not a fixed number of milliseconds: with a fixed window a coarser grid is a wider
+# net and would always look like the better fit.
+_FIT_ALPHA = 0.12
+
+
+def _subdivide(bt: np.ndarray, n: int) -> np.ndarray:
+    out = [bt]
+    for k in range(1, n):
+        out.append(bt[:-1] + np.diff(bt) * (k / n))
+    return np.sort(np.concatenate(out))
+
+
+def _grid_fit(lines: np.ndarray, t: np.ndarray, w: np.ndarray) -> float:
+    """How much better than chance a grid explains these onsets.
+
+    1.0 means the grid accounts for nothing its spacing would not account for on
+    random times.  One constant offset is allowed, because an onset detector reports
+    the peak of a spectral-flux envelope and so trails the transient by the same
+    amount everywhere — a lag of the detector, not an error of the grid.
+    """
+    if len(lines) < 4 or len(t) == 0:
+        return 0.0
+    sp = float(np.median(np.diff(lines)))
+    tol = _FIT_ALPHA * sp
+    best = 0.0
+    for off in np.linspace(-sp / 2, sp / 2, 120):
+        j = np.clip(np.searchsorted(lines, t + off), 1, len(lines) - 1)
+        d = np.minimum(np.abs(t + off - lines[j - 1]), np.abs(t + off - lines[j]))
+        best = max(best, float((w * (d <= tol)).sum()))
+    return best / (w.sum() or 1.0) / (2 * _FIT_ALPHA)
+
+
+def _refold_pulse(bt: np.ndarray, env: np.ndarray, hop: int, sr: int) -> np.ndarray:
+    """Repair a 4/3 or 2/3 lock by resampling the tracked grid.
+
+    Two steps, and the order matters.  First: does the grid we have actually fail?
+    A beat divided in three fitting where a beat divided in four does not is the
+    only symptom a wrong pulse has — the autocorrelation on its own fires on plenty
+    of songs whose grid is already right (it moved six of the canon's good grids
+    when it was trusted alone, one of them from 4.02 down to 2.15).
+
+    Only then: which repair?  Our /3 lines and the /4 lines of a tempo 4/3 slower
+    fall at the same times, so onset positions cannot tell those apart and the
+    autocorrelation decides.  librosa cannot be *told* to look for a non-octave
+    pulse — handed the prior it jumps back to the one it likes — but it does not
+    have to be.  A period of 4/3 or 2/3 of a beat is a whole number of thirds of a
+    beat, so the corrected beats are already in the grid we have: take every third
+    of each tracked beat and keep every 4th (or 2nd) of them.  Resampling this way
+    keeps the tracker's local timing, which follows a song that breathes.
+
+    A song that is genuinely swung comes through here unchanged: its pulse is ours,
+    and placing its notes needs a beat that divides in three, which the skeleton
+    cannot build.
+    """
+    import librosa
+    if len(bt) < 8:
+        return bt
+    fr = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=hop, backtrack=False)
+    if len(fr) < 20:
+        return bt
+    t = librosa.frames_to_time(fr, sr=sr, hop_length=hop)
+    w = env[fr]
+    m = (t >= bt[0]) & (t <= bt[-1])
+    t, w = t[m], w[m] / (w.max() or 1.0)
+    if len(t) < 20:
+        return bt
+    four = _grid_fit(_subdivide(bt, 4), t, w)
+    three = max(_grid_fit(_subdivide(bt, 3), t, w), _grid_fit(_subdivide(bt, 6), t, w))
+    if three <= four * _PULSE_MARGIN:
+        return bt
+
+    fpb = float(np.median(np.diff(bt))) * sr / hop
+    win, _sc = best_pulse(env, fpb)
+    if win == "ours":
+        return bt
+    thirds = _subdivide(bt, 3)
+    step = 4 if win == "x4/3" else 2
+    # which of the `step` alignments is the beat: the one the onsets are loudest on
+    idx = np.clip((thirds * sr / hop).round().astype(int), 0, len(env) - 1)
+    strength = [env[idx[ph::step]].sum() for ph in range(step)]
+    return thirds[int(np.argmax(strength))::step]
+
+
 def _beat_grid(y: np.ndarray, sr: int, expected_bpm: int | None) -> tuple[float, list[float]]:
     """Tempo + downbeat-aligned beat times.
 
     The tempo octave is chosen so the tapping pulse lands in 84–170 BPM (closest to
-    120 when two octaves qualify); only ×2 / ÷2 candidates are considered, never 3/2,
+    120 when two octaves qualify); only ×2 / ÷2 candidates are considered here,
     because librosa cannot lock onto a non-octave prior and jumps to double time.
+    A 4/3 or 2/3 slip survives that and is repaired afterwards by ``_refold_pulse``,
+    which rebuilds the grid out of the beats we already tracked rather than asking
+    the tracker again.  Eleven of the 34 songs in the canon needed it: on those the
+    old grid fitted the audio no better than a random grid of the same spacing
+    (``tools/grid_check.py``).
     """
     import librosa
     from analysis.audio_analysis import find_downbeat_offset
@@ -327,9 +446,19 @@ def _beat_grid(y: np.ndarray, sr: int, expected_bpm: int | None) -> tuple[float,
         mid = (bt[:-1] + bt[1:]) * 0.5
         bt = np.sort(np.concatenate([bt, mid]))
         bpm = float(60.0 / np.median(np.diff(bt)))
+    # the beat grid is the one thing every point hangs off, and librosa's default
+    # hop is 23 ms — the size of the errors being fixed here.  256 is what the rest
+    # of the skeleton samples at.
+    fine_hop = 256
+    fine_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=fine_hop)
+    bt2 = _refold_pulse(np.asarray(bt, dtype=float), fine_env, fine_hop, sr)
+    if len(bt2) != len(bt):
+        bt = bt2
+        bpm = float(60.0 / np.median(np.diff(bt)))
+
     onset_times = librosa.frames_to_time(np.arange(len(onset_env)), sr=sr)
     off = find_downbeat_offset(bt, onset_env, onset_times)
-    return bpm, bt[off:].tolist()
+    return bpm, list(np.asarray(bt, dtype=float)[off:])
 
 
 def _sustains(y: np.ndarray, sr: int, beat_dur: float) -> list[tuple[float, float]]:

@@ -6,6 +6,10 @@ Synthesise the game's sound effects.
 No sample pack was attached, so the sounds are made here: short, chiptune-ish,
 in keeping with the pixel art — square waves, noise bursts, hard envelopes.
 Each is a few kilobytes of 16-bit mono at 32 kHz.
+
+The exceptions are the recorded effects — the hitsound and the goose's footsteps
+(gooserun1-3) — which live in assets/audios/effects and reach the same folder
+through tools/export_web.py.
 """
 from __future__ import annotations
 
@@ -324,19 +328,6 @@ def smash() -> np.ndarray:
     return quantise(0.7 * crack + 0.9 * boom_ + pillar + sparks)
 
 
-def run_steps() -> np.ndarray:
-    """a cartoon footstep patter — quick alternating hollow knocks, eight a second,
-    a second and a half of it (the loader loops it)"""
-    out = []
-    for i in range(12):
-        tt = t(0.125)
-        f = 260 if i % 2 == 0 else 330
-        knock = square(tt, np.linspace(f, f * 0.6, len(tt)), 0.3) * env(len(tt), 0.001, 0.06, 4)
-        tap = lowpass(noise(len(tt)), 3000) * env(len(tt), 0.0005, 0.02, 5)
-        out.append(0.7 * knock + 0.5 * tap)
-    return quantise(np.concatenate(out) * 0.6)
-
-
 def menace() -> np.ndarray:
     """ドドドド — a low drone with a pulse, under the pose"""
     tt = t(2.2)
@@ -467,7 +458,7 @@ SOUNDS = {
     "whoosh": whoosh, "rock_break": rock_break, "uppercut": uppercut, "thud": thud, "splat": splat,
     "windup": windup, "megahonk": megahonk, "shift_tick": shift_tick, "shift_go": shift_go,
     "boom": boom, "whiff": whiff,
-    "run_steps": run_steps, "menace": menace, "glass": glass, "slash": slash, "kanji": kanji,
+    "menace": menace, "glass": glass, "slash": slash, "kanji": kanji,
     "flash_hit": flash_hit, "crash_zoom": crash_zoom, "text_tick": text_tick, "fight_card": fight_card,
     "throw_far": throw_far, "eye_glow": eye_glow, "down_card": down_card,
     "bodyslam": bodyslam, "dash": dash, "bat": bat, "smash": smash,

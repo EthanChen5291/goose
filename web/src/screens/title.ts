@@ -26,6 +26,10 @@ export interface TitleOptions {
   movie: Promise<GooseMovie>
   /** the plate the goose starts on: the one it last left */
   at?: number
+  /** the theme's clock: the title waits on it, and the hint blinks on its beat */
+  music?: { since: () => number | null; beat: number }
+  /** the session's first title: it waits for the theme's first beat */
+  intro?: boolean
 }
 
 export interface TitleItem { label: string; cls: string; kind: ExitKind; go: () => void }
@@ -109,7 +113,40 @@ export function buildTitle(opts: TitleOptions): { el: HTMLElement; stop: () => v
   corner.className = 'px-corner'
   corner.innerHTML = '<span class="px-hint">← → choose · enter</span><span class="px-ver">web build</span>'
 
+  /**
+   * The cold open: black until the theme is playing, and then the meadow, the
+   * plates and the brand all arriving at once behind the flash.
+   *
+   * The theme opens on its drop, so there is nothing to wait through — but a
+   * page nobody has touched yet is not allowed to make a sound, so what the
+   * black is really waiting for is the first key or click.  Either way the
+   * title lands on the theme's first beat, because that is when it is told.
+   */
+  let curtain: HTMLElement | null = null
+  let lifted = !opts.intro
+  if (opts.intro) {
+    px.root.classList.add('intro')
+    curtain = document.createElement('div')
+    curtain.className = 'px-curtain'
+    const press = document.createElement('div')
+    press.className = 'px-press'
+    press.textContent = 'press any key'
+    curtain.append(press)
+  }
+  const lift = (): void => {
+    if (lifted) return
+    lifted = true
+    px.root.classList.remove('intro')
+    const c = curtain
+    curtain = null
+    c?.classList.add('gone')
+    flash.classList.add('on')
+    window.setTimeout(() => flash.classList.remove('on'), 90)
+    window.setTimeout(() => c?.remove(), 400)
+  }
   const onKey = (e: KeyboardEvent): void => {
+    // the press that buys the page its sound is not also a menu press
+    if (!lifted) { e.preventDefault(); return }
     if (pressing) return
     if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) { e.preventDefault(); hover(cur + 1) }
     else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'Tab') { e.preventDefault(); hover(cur - 1) }
@@ -127,6 +164,7 @@ export function buildTitle(opts: TitleOptions): { el: HTMLElement; stop: () => v
   stops.push(() => window.removeEventListener('mousemove', onMove))
 
   stage.append(layer, brand, corner, flash)
+  if (curtain) stage.appendChild(curtain)
 
   // the movie, once it is built: into its menu scene, the goose on the last plate
   let alive = true
@@ -151,8 +189,23 @@ export function buildTitle(opts: TitleOptions): { el: HTMLElement; stop: () => v
   let raf = 0
   const tick = (): void => {
     raf = requestAnimationFrame(tick)
-    const b = ((performance.now() - t0) / 500) % 1
+    const beat = opts.music?.beat ?? 0.5
+    const since = opts.music?.since() ?? null
+    // the hint blinks on the theme's beat, and on its own before there is one
+    const b = since === null ? ((performance.now() - t0) / 1000 / beat) % 1 : (since / beat) % 1
     corner.classList.toggle('lit', b < 0.5)
+    if (!lifted) {
+      if (since === null) {
+        // nothing is playing yet: after a moment, the curtain asks to be touched.
+        // If sound never comes at all — a page left alone, a theme that will not
+        // load — the title is still not worth holding hostage to it.
+        const waited = performance.now() - t0
+        curtain?.classList.toggle('waiting', waited > 700)
+        if (waited > 10000) lift()
+      } else {
+        lift()
+      }
+    }
     if (!movie) return
     buttons.forEach((btn, i) => {
       const [x, y, bw, bh] = movie!.menuBox(i)

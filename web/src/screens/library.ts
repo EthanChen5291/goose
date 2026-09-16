@@ -87,7 +87,7 @@ export async function importSong(bundleFile: File, audioFile: File): Promise<Cus
     throw new Error('That chart file is not readable JSON.')
   }
   if (!bundle.charts || !Object.keys(bundle.charts).length) {
-    throw new Error('That file has no charts in it. Did you pick the .nokichart.json?')
+    throw new Error('That file has no charts in it. Did you pick the .goosechart.json?')
   }
   if (bundle.bundle_version !== 1) {
     throw new Error(`This build reads bundle version 1, that file is version ${bundle.bundle_version}.`)
@@ -126,7 +126,7 @@ export function buildImportScreen(
         cannot run in a browser tab. Chart the song once on your machine, then bring
         both files here.</p>
       <pre class="cmd"><code>python3 web/tools/chart_file.py "your song.mp3"</code></pre>
-      <p class="subtitle">That writes <code>your song.nokichart.json</code> next to the audio.</p>
+      <p class="subtitle">That writes <code>your song.goosechart.json</code> next to the audio.</p>
       <div class="pickers">
         <label class="picker">
           <span>Audio file</span>

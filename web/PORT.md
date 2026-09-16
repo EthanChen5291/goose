@@ -20,8 +20,9 @@ loads audio + chart JSON and renders. Nothing about `charting/` or `analysis/` m
 | `game/ui_components.py:Petal` | `src/screens/chrome.ts` | 55 | one canvas, not one node each |
 | `game/coach/*` | `src/screens/coach.ts` | 368 | DOM |
 
-Everything else (`charting/`, `analysis/`, `game/beatmap_generator.py`,
-`game/slot_builder.py`, `tools/`) stays Python and is untouched.
+Everything else (`charting/`, `analysis/`, `tools/`) stays Python and is
+untouched.  The generator that came before `charting/` is in `legacy/`, run by
+nothing and kept to read.
 
 ## Phases
 

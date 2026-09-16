@@ -3,7 +3,7 @@
  *
  * Nothing else — the Run strip at ten frames a second on a thin ground line,
  * a little dust behind the feet, "LOADING" blinking in the corner, and the
- * footstep patter looping underneath.  It stays up at least `minSecs` so it
+ * footstep recordings chaining underneath.  It stays up at least `minSecs` so it
  * reads as a beat of its own rather than a flicker.
  */
 import { pixelStage, charStrip, loadManifest } from './pxchrome'

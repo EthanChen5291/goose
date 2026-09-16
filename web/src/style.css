@@ -453,6 +453,23 @@ kbd {
 .px-flash { pointer-events: none; background: #fff; opacity: 0; }
 .px-flash.on { opacity: .92; }
 
+/* ── the cold open: black, the wordmark typed on the theme's beat ─────────── */
+.px-curtain {
+  left: 0; top: 0; width: 100%; height: 100%;
+  background: #07060d;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  transition: opacity .12s steps(2, end);
+}
+.px-curtain.gone { opacity: 0; pointer-events: none; }
+.px-press { font-size: 8px; color: #8d93b4; opacity: 0; transition: opacity .2s ease; }
+.px-curtain.waiting .px-press { opacity: 1; }
+/* the title's furniture waits behind it, then arrives on the drop */
+.title-root .px-brand { transition: opacity .16s ease, transform .16s cubic-bezier(.2, .9, .3, 1.25); transform-origin: left top; }
+.title-root .px-corner, .title-root .plate-layer { transition: opacity .22s ease .05s; }
+.pxroot.intro .px-brand { opacity: 0; transform: scale(1.22); }
+.pxroot.intro .px-corner, .pxroot.intro .plate-layer { opacity: 0; }
+.pxroot.intro .plate-btn { pointer-events: none; }
+
 /* the kit's bars, in game pixels (the pause screen sizes the same bars by --k) */
 .pxstage .pbtn {
   width: 106px;

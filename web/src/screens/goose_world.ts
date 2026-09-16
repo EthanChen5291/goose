@@ -505,64 +505,71 @@ export function buildHero(base: THREE.MeshToonMaterial): HeroRig {
   const knees: [THREE.Group, THREE.Group] = [new THREE.Group(), new THREE.Group()]
   hips.forEach((hip, i) => {
     const side = i === 0 ? -1 : 1
-    hip.position.set(0, 15, side * 3.4)
-    hip.add(part(4.8, 7.2, 4.8, G_WHITE, 0, -3.5, 0))         // thigh, thick
-    hip.add(part(3.2, 3.0, 5.4, G_SHADE, 0.9, -2.2, 0))       // the quad's shadow line
+    hip.position.set(0, 15, side * 4.6)
+    hip.add(part(6.6, 7.4, 6.6, G_WHITE, 0, -3.5, 0))         // thigh, a tree
+    hip.add(part(1.1, 5.2, 6.8, G_SHADE, 3.3, -2.6, 0))       // the quad's groove, cut deep
     const knee = knees[i]
     knee.position.set(0, -7, 0)
-    knee.add(part(3.6, 6.6, 3.6, G_WHITE, 0, -3.2, 0))        // shin
-    knee.add(part(2.2, 3.4, 3.8, G_SHADE, -1.0, -2.6, 0))     // the calf
-    knee.add(part(5.4, 2.4, 4.0, G_ORANGE, 0.9, -7.6, 0))     // the boot: a goose foot, big
-    knee.add(part(2.4, 1, 1.3, G_BROWN, 3.0, -8.2, 1.0))      // toes
-    knee.add(part(2.4, 1, 1.3, G_BROWN, 3.0, -8.2, -1.0))
+    knee.add(part(4.7, 6.8, 4.7, G_WHITE, 0, -3.2, 0))        // shin
+    knee.add(part(3.0, 4.2, 4.9, G_SHADE, -1.4, -2.6, 0))     // the calf
+    knee.add(part(6.8, 2.6, 5.2, G_ORANGE, 1.1, -7.7, 0))     // the boot: a goose foot, big
+    knee.add(part(2.9, 1.1, 1.6, G_BROWN, 3.7, -8.3, 1.3))    // toes
+    knee.add(part(2.9, 1.1, 1.6, G_BROWN, 3.7, -8.3, -1.3))
     hip.add(knee)
     root.add(hip)
   })
   // torso hangs from the spine joint at the pelvis
   const spine = new THREE.Group()
   spine.position.set(0, 15.5, 0)
-  spine.add(part(7.5, 4, 9, G_WHITE, 0, 1.5, 0))               // pelvis / waist, narrow against the chest
-  spine.add(part(10.5, 10, 13, G_WHITE, 0, 8.4, 0))            // chest, a barrel
-  spine.add(part(3.6, 4.4, 5.2, G_WHITE, 4.9, 10.4, 3.2))      // pecs, out front
-  spine.add(part(3.6, 4.4, 5.2, G_WHITE, 4.9, 10.4, -3.2))
-  spine.add(part(1.2, 1.2, 12.6, G_SHADE, 5.6, 8.0, 0))        // the line under the pecs
+  spine.add(part(8.8, 4.2, 11.0, G_WHITE, 0, 1.5, 0))          // pelvis / waist, kept narrow against the chest
+  spine.add(part(15.0, 11.0, 18.5, G_WHITE, 0, 8.6, 0))        // chest, a barrel
+  spine.add(part(5.2, 5.2, 7.4, G_WHITE, 7.0, 11.0, 4.7))      // pecs, out front
+  spine.add(part(5.2, 5.2, 7.4, G_WHITE, 7.0, 11.0, -4.7))
+  spine.add(part(1.5, 1.6, 17.6, G_SHADE, 7.8, 8.2, 0))        // the line under the pecs
+  spine.add(part(1.3, 1.3, 3.0, G_SHADE, 6.9, 10.9, 0))        // the split between them
   for (let r = 0; r < 4; r++) {                                 // abs, a six-pack and change
-    spine.add(part(1.0, 1.9, 2.2, G_SHADE, 5.3, 6.8 - r * 1.75, 1.4))
-    spine.add(part(1.0, 1.9, 2.2, G_SHADE, 5.3, 6.8 - r * 1.75, -1.4))
+    spine.add(part(1.2, 2.2, 2.9, G_SHADE, 7.6, 6.9 - r * 1.8, 2.0))
+    spine.add(part(1.2, 2.2, 2.9, G_SHADE, 7.6, 6.9 - r * 1.8, -2.0))
   }
-  spine.add(part(3.0, 5.0, 3.2, G_SHADE, -4.6, 9.4, 3.6))      // the lats, flaring behind the arms
-  spine.add(part(3.0, 5.0, 3.2, G_SHADE, -4.6, 9.4, -3.6))
-  spine.add(part(11.5, 3.6, 18, G_WHITE, 0, 12.6, 0))          // shoulders, very wide
+  spine.add(part(1.1, 7.4, 1.2, G_SHADE, 7.7, 4.4, 0))         // the centre line down the abs
+  for (let r = 0; r < 3; r++) {                                 // the serratus, fanning off the ribs
+    spine.add(part(1.0, 1.4, 2.4, G_SHADE, 5.4, 8.4 - r * 1.6, 6.4 - r * 0.5))
+    spine.add(part(1.0, 1.4, 2.4, G_SHADE, 5.4, 8.4 - r * 1.6, -6.4 + r * 0.5))
+  }
+  spine.add(part(4.4, 6.8, 4.6, G_SHADE, -6.6, 9.6, 5.4))      // the lats, flaring behind the arms
+  spine.add(part(4.4, 6.8, 4.6, G_SHADE, -6.6, 9.6, -5.4))
+  spine.add(part(15.0, 4.0, 25.5, G_WHITE, 0, 12.9, 0))        // shoulders, very wide
   // arms
   const shoulders: [THREE.Group, THREE.Group] = [new THREE.Group(), new THREE.Group()]
   const elbows: [THREE.Group, THREE.Group] = [new THREE.Group(), new THREE.Group()]
   const wrists: [THREE.Group, THREE.Group] = [new THREE.Group(), new THREE.Group()]
   shoulders.forEach((sh, i) => {
     const side = i === 0 ? -1 : 1
-    sh.position.set(0, 12.6, side * 9.2)
-    sh.add(part(5.0, 4.8, 5.0, G_WHITE, 0, 0.2, 0))             // deltoid, a cannonball
-    sh.add(part(4.6, 6.6, 4.6, G_WHITE, 0, -3.4, 0))            // upper arm
-    sh.add(part(6.2, 4.6, 5.6, G_WHITE, 1.0, -3.4, 0))          // the bicep, bulging forward
-    sh.add(part(2.0, 3.0, 5.8, G_SHADE, -2.8, -3.6, 0))         // the tricep's shade
+    sh.position.set(0, 12.9, side * 12.8)
+    sh.add(part(7.2, 6.6, 7.2, G_WHITE, 0, 0.2, 0))             // deltoid, a cannonball
+    sh.add(part(5.9, 7.0, 5.9, G_WHITE, 0, -3.5, 0))            // upper arm
+    sh.add(part(8.4, 6.0, 7.0, G_WHITE, 1.5, -3.5, 0))          // the bicep, bulging forward
+    sh.add(part(1.2, 4.6, 1.3, G_SHADE, 5.2, -3.5, 0))          // the split over its peak
+    sh.add(part(2.6, 4.2, 7.2, G_SHADE, -3.9, -3.8, 0))         // the tricep's shade
     const el = elbows[i]
-    el.position.set(0, -6.8, 0)
-    el.add(part(3.8, 6.4, 3.8, G_WHITE, 0, -3.2, 0))            // forearm
-    el.add(part(4.4, 2.6, 4.2, G_WHITE, 0.3, -1.6, 0))          // the forearm's swell below the elbow
+    el.position.set(0, -7.3, 0)
+    el.add(part(4.9, 6.8, 4.9, G_WHITE, 0, -3.2, 0))            // forearm
+    el.add(part(5.8, 3.2, 5.4, G_WHITE, 0.4, -1.6, 0))          // the forearm's swell below the elbow
     const wr = wrists[i]
-    wr.position.set(0, -6.4, 0)
-    wr.add(part(3.0, 3.0, 2.8, G_ORANGE, 0.3, -1.4, 0))         // hand: goose orange
+    wr.position.set(0, -6.9, 0)
+    wr.add(part(3.8, 3.6, 3.4, G_ORANGE, 0.4, -1.5, 0))         // hand: goose orange
     el.add(wr)
     sh.add(el)
     spine.add(sh)
   })
   // the neck and the goose's head on top, a size up to sit on those shoulders
   const neck = new THREE.Group()
-  neck.position.set(2.0, 14.2, 0)
-  neck.add(part(3.8, 2.8, 3.8, G_WHITE, 0, 1.2, 0))
+  neck.position.set(2.0, 14.7, 0)
+  neck.add(part(4.6, 2.6, 4.6, G_WHITE, 0, 1.0, 0))
   const head = buildHead(inkPart)
-  head.g.position.set(0.2, 2.6, 0)
-  // the head is the goose's own size on a body three times its width: the joke of the pose
-  head.g.scale.setScalar(0.85)
+  head.g.position.set(0.2, 2.9, 0)
+  // the head stays the bird's, shrunk onto a body five times its width: the joke of the pose
+  head.g.scale.setScalar(0.5)
   neck.add(head.g)
   spine.add(neck)
   root.add(spine)

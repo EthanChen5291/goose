@@ -24,7 +24,7 @@
   },
   "Scorpion.mp3": {
     "classic": 110829,
-    "master": 187295,
+    "master": 206076,
     "demon": 45160,
     "classic_stats": {
       "accuracy": 20.107913669064747,
@@ -40,6 +40,13 @@
       "stars": 0,
       "max_combo": 2,
       "misses": 8
+    },
+    "master_stats": {
+      "accuracy": 85.0,
+      "grade": "B",
+      "stars": 1,
+      "max_combo": 23,
+      "misses": 12
     }
   },
   "Catch Catch.mp3": {
@@ -55,7 +62,7 @@
     }
   },
   "Fluffing A Duck.mp3": {
-    "classic": 17802,
+    "classic": 629051,
     "classic@letters": 20368,
     "classic@letters_stats": {
       "accuracy": 18.235294117647058,
@@ -63,6 +70,13 @@
       "stars": 0,
       "max_combo": 1,
       "misses": 13
+    },
+    "classic_stats": {
+      "accuracy": 77.4342105263158,
+      "grade": "C",
+      "stars": 0,
+      "max_combo": 22,
+      "misses": 25
     }
   },
   "Malo Kart.mp3": {
@@ -93,20 +107,42 @@
     }
   },
   "tidalwave.mp3": {
-    "master": 144850,
+    "master": 554985,
     "classic": 31394,
-    "demon": 68054
+    "demon": 68054,
+    "master_stats": {
+      "accuracy": 83.17689530685921,
+      "grade": "B",
+      "stars": 1,
+      "max_combo": 64,
+      "misses": 26
+    }
   },
   "Toby Fox - Finale.mp3": {
-    "master": 53280,
-    "demon": 68093
+    "master": 679448,
+    "demon": 68093,
+    "master_stats": {
+      "accuracy": 80.85585585585585,
+      "grade": "B",
+      "stars": 1,
+      "max_combo": 45,
+      "misses": 28
+    }
   },
   "Chaos Construct.mp3": {
     "master": 28350
   },
   "Glitch in your Heart.mp3": {
     "master": 109687,
-    "demon": 37128
+    "demon": 37128,
+    "classic": 630768,
+    "classic_stats": {
+      "accuracy": 83.06358381502889,
+      "grade": "B",
+      "stars": 1,
+      "max_combo": 94,
+      "misses": 15
+    }
   },
   "what is love?.mp3": {
     "master": 177750,
@@ -176,7 +212,15 @@
     "demon": 109482
   },
   "GHOST.mp3": {
-    "demon": 226500
+    "demon": 226500,
+    "master": 339824,
+    "master_stats": {
+      "accuracy": 68.04838709677419,
+      "grade": "D",
+      "stars": 0,
+      "max_combo": 27,
+      "misses": 145
+    }
   },
   "crystallized.mp3": {
     "demon": 50407

@@ -26,6 +26,22 @@ from .words import WordInfo
 
 PHRASE_BARS = 4
 
+# ── playfield stages ──────────────────────────────────────────────────────
+# Two of these change the playfield rather than the palette, so where they land is
+# a charting decision, not a rendering one — the chart carries them in `stages` and
+# the renderer reads them.
+#
+#   onecircle  the four lanes collapse into one and the alphabet collapses with
+#              them: only the index and middle keys of each hand, traded fast.
+#              This one really is a different chart, so it is a phrase kind.
+#   columns    the same words, but the hit circles regroup by keyboard *row*
+#              instead of hand zone.  Nothing about the notes changes, so it is a
+#              presentation mark on an ordinary words phrase.
+ONE_CIRCLE_KEYS = ("f", "j", "d", "k")            # alternating hands, index first
+ONE_CIRCLE_SHARE = {"journey": 0.0, "classic": 0.05, "master": 0.09, "demon": 0.12}
+ONE_CIRCLE_CAP = {"classic": 5, "master": 7, "demon": 9}   # letters per bar
+COLUMNS_SHARE = {"journey": 0.06, "classic": 0.10, "master": 0.12, "demon": 0.14}
+
 # share of phrases that may be a pattern / an anchor, per tier, and the pattern shapes each may use
 # Normal is the reference chart (Keyboard Warrior's shape: words on the song's layers), so its
 # special phrases are few; Hard and Demon add more of them on top of the same notes
@@ -56,6 +72,33 @@ DUO = {
     "demon":   {"voices": ("words", "stream", "drums"), "chain": True, "swap": True, "chord": True,  "max": 4, "min_beats": 2},
 }
 BAND_HAND = {"low": 0, "high": 1}                            # a bass drone is the left hand, a lead the right
+# A loud phrase asks for more than one long key held down.  Where the song is
+# driving, a Duo phrase gets more holds, shorter ones, and both hands together —
+# the hold becomes punctuation rather than a rest.  A chord is capped so it stays
+# a stab: while both hands hold, neither can play, and a long one is a hole.
+LOUD_VIBES = ("burst", "drive")
+CHORD_MAX_BEATS = {"quiet": 4.0, "loud": 3.0}
+# no stretch of a Duo phrase may go longer than this without a note
+MAX_HOLE_BEATS = 1.5
+
+
+def _loud(ph: "Phrase") -> bool:
+    return ph.vibe in LOUD_VIBES or ph.energy >= 0.62
+
+
+def _duo_rules(tier_key: str, ph: "Phrase") -> dict:
+    """``DUO`` for this tier, opened up where the phrase is loud."""
+    r = dict(DUO[tier_key])
+    if not _loud(ph):
+        return r
+    r["max"] += 2
+    r["min_beats"] = max(1.5, r["min_beats"] - 1.0)
+    # both hands at once is what makes a loud hold feel like part of the song rather
+    # than a pause in it.  Not on Normal: that tier is the reference shape, and a
+    # two-handed hold is not something the reels do.  Loud Normal phrases get the
+    # extra holds and the shorter floor instead.
+    r["chord"] = r["chord"] or tier_key == "master"
+    return r
 
 
 @dataclass
@@ -123,6 +166,29 @@ def plan_phrases(sk: SK.Skeleton, tier_key: str, vibes: list[str], rng: random.R
     max_anc = max(1, int(round(n * ANCHOR_SHARE[tier_key])))
     beat = 60.0 / sk.bpm
 
+    # ── one circle ───────────────────────────────────────────────────────
+    # Chosen before patterns and anchors: it is the rarest thing in a song and the
+    # pattern selector wants the same loud phrases, so going second left it with
+    # nothing on the tiers that use patterns most.
+    # The loudest phrase of the song that is not already doing something else.
+    # Collapsing to four keys is only worth it where the music is at its busiest;
+    # anywhere quieter it reads as the chart giving up rather than closing in.
+    max_one = int(round(n * ONE_CIRCLE_SHARE.get(tier_key, 0.0)))
+    if max_one:
+        cands = [ph for ph in phrases[2:-1]
+                 if free(ph) and ph.kind == "words" and ph.vibe == "burst" and ph.density >= 3.0]
+        cands.sort(key=lambda ph: -ph.density)
+        taken = 0
+        for ph in cands:
+            if taken >= max_one:
+                break
+            if any(phrases[j].kind != "words" for j in (ph.idx - 1, ph.idx + 1) if 0 <= j < n):
+                continue
+            if (ph.t1 - ph.t0) < 8 * beat:
+                continue
+            ph.kind = "onecircle"
+            taken += 1
+
     # patterns: builds first (the phrase before a louder one), strongest rise first; on Hard and
     # Demon a dense burst phrase may be a pattern too, so a fast chorus streams instead of
     # chopping words
@@ -167,6 +233,25 @@ def plan_phrases(sk: SK.Skeleton, tier_key: str, vibes: list[str], rng: random.R
         ph.extra["hand"] = hand           # the fallback hand when the phrase has no drone to read
         hand = 1 - hand
         taken += 1
+
+    # ── columns ──────────────────────────────────────────────────────────
+    # A lift: a driving phrase that follows a quieter one.  The words are
+    # untouched — only where the hit circles sit changes — so the phrase stays
+    # with the word fitter and carries a presentation mark instead of a kind.
+    max_col = int(round(n * COLUMNS_SHARE.get(tier_key, 0.0)))
+    if max_col:
+        cands = [ph for ph in phrases[1:-1]
+                 if free(ph) and ph.kind == "words" and ph.vibe in ("drive", "burst")
+                 and phrases[ph.idx - 1].energy < ph.energy - 0.08]
+        cands.sort(key=lambda ph: -(ph.energy - phrases[ph.idx - 1].energy))
+        taken = 0
+        for ph in cands:
+            if taken >= max_col:
+                break
+            if any(phrases[j].extra.get("stage") for j in (ph.idx - 1, ph.idx + 1) if 0 <= j < n):
+                continue
+            ph.extra["stage"] = "columns"
+            taken += 1
     return phrases
 
 
@@ -191,9 +276,19 @@ def _pattern_letters(shape: str, focus: str, rng: random.Random, tier_key: str =
 
 
 def plan_pattern(sk: SK.Skeleton, ph: Phrase, tier_key: str, focus: str, rng: random.Random,
-                 word_id_start: int, vibes: list[str], min_gap: float, finest: int) -> list[M.CharEvent]:
-    cycle = _pattern_letters(ph.extra.get("shape", "AB"), focus, rng, tier_key)
-    caps = PATTERN_CAP[tier_key]
+                 word_id_start: int, vibes: list[str], min_gap: float, finest: int,
+                 kind: str = "pattern") -> list[M.CharEvent]:
+    """The build: two or three letters trading on the accents.
+
+    ``kind`` "onecircle" is the same machinery with the alphabet pinned to the four
+    home keys and a denser cap — every lane is about to become one circle, so the
+    letters have to be ones both hands can trade at speed.
+    """
+    one = kind == "onecircle"
+    cycle = (list(ONE_CIRCLE_KEYS) if one
+             else _pattern_letters(ph.extra.get("shape", "AB"), focus, rng, tier_key))
+    caps = ({v: ONE_CIRCLE_CAP.get(tier_key, 5) for v in ("burst", "drive", "groove", "sustain")}
+            if one else PATTERN_CAP[tier_key])
     beat = 60.0 / sk.bpm
     slots: list[SK.Point] = []
     for b in range(ph.bar0, ph.bar1):
@@ -227,10 +322,10 @@ def plan_pattern(sk: SK.Skeleton, ph: Phrase, tier_key: str, focus: str, rng: ra
             events.append(M.CharEvent(
                 char=ch, timestamp=float(SK.hit_time(p)), word_text=text, char_idx=j,
                 beat_position=float(p.bar * 4 + p.beat + p.sub / 4), section=int(p.bar // 4),
-                weight=p.metric, lane=KB.lane_of(ch), word_id=wid, section_kind="pattern",
+                weight=p.metric, lane=KB.lane_of(ch), word_id=wid, section_kind=kind,
             ))
         events.append(M.CharEvent(char="", timestamp=float(g[-1].t) + 0.05, word_text="", char_idx=-1,
-                                  beat_position=0.0, section=int(g[-1].bar // 4), is_rest=True, section_kind="pattern"))
+                                  beat_position=0.0, section=int(g[-1].bar // 4), is_rest=True, section_kind=kind))
         wid += 1
         i += len(g)
     return events
@@ -265,10 +360,13 @@ def plan_holds(sk: SK.Skeleton, ph: Phrase, tier_key: str, rng: random.Random) -
       together on the overlap; below Demon the later drone is trimmed to start after the first
     * with no drone at all the phrase gets one two-bar hold on the fallback hand
     """
-    rules = DUO[tier_key]
+    rules = _duo_rules(tier_key, ph)
+    loud = _loud(ph)
     beat = 60.0 / sk.bpm
     min_len = rules["min_beats"] * beat
-    floor_len = 4 * beat                                # a hold is worth at least a bar of the other hand
+    # a hold is worth at least a bar of the other hand — half that where the song
+    # drives, so a loud phrase gets several holds instead of one long one
+    floor_len = (2 if loud else 4) * beat
     end_guard = 0.5 * beat                              # the release never collides with a note
     raw: list[dict] = []
     drones = sorted(ph.drones)
@@ -304,13 +402,17 @@ def plan_holds(sk: SK.Skeleton, ph: Phrase, tier_key: str, rng: random.Random) -
             if rules["chord"] and h["hand"] != prev["hand"] and h["t1"] - h["t0"] >= min_len:
                 # trim both to the overlap so they release together
                 t0, t1 = max(prev["t0"], h["t0"]), min(prev["t1"], h["t1"])
+                # while both hands hold, neither can play: keep a chord short
+                t1 = min(t1, t0 + CHORD_MAX_BEATS["loud" if loud else "quiet"] * beat)
                 if t1 - t0 >= min_len:
                     prev["t0"], prev["t1"] = t0, t1
                     h["t0"], h["t1"] = t0, t1
                     prev["chord"] = h["chord"] = True
                     holds.append(h)
                 continue
-            h["t0"] = prev["t1"] + beat                 # a beat of air at the hand-off
+            # the hand-off needs air, but a whole beat of it reads as the chart
+            # stopping; the gap filler below covers what is left
+            h["t0"] = prev["t1"] + 0.5 * beat
             if h["t1"] - h["t0"] < min_len:
                 continue
         if holds and not rules["chain"] and h["hand"] == holds[-1]["hand"]:
@@ -327,8 +429,13 @@ def plan_holds(sk: SK.Skeleton, ph: Phrase, tier_key: str, rng: random.Random) -
     return holds
 
 
-def _voice_for(sk: SK.Skeleton, t0: float, t1: float, tier_key: str) -> str:
-    """What the free hand plays under a hold, from what the mix does there."""
+def _voice_for(sk: SK.Skeleton, t0: float, t1: float, tier_key: str, ph: "Phrase | None" = None) -> str:
+    """What the free hand plays under a hold, from what the mix does there.
+
+    A loud phrase reaches for the busier voices on weaker evidence: under a hold in
+    a chorus a stream of hats or the kit is the point, where words would read as the
+    chart having stepped back.
+    """
     pts = sk.points_in(t0, t1)
     if not pts:
         return "words"
@@ -338,10 +445,12 @@ def _voice_for(sk: SK.Skeleton, t0: float, t1: float, tier_key: str) -> str:
     tune = sum(1 for p in pts if p.vocal >= 0.45 and p.peak)
     hats = sum(1 for p in ands if p.hat >= 0.5 and p.peak)
     allowed = DUO[tier_key]["voices"]
+    loud = ph is not None and _loud(ph)
     # proportional to the span: a hold is often only a bar long
-    if "stream" in allowed and ands and hats >= 0.6 * len(ands) and hats >= 3:
+    if "stream" in allowed and ands and hats >= (0.45 if loud else 0.6) * len(ands) and hats >= (2 if loud else 3):
         return "stream"
-    if "drums" in allowed and beats and drums >= 0.75 * len(beats) and drums >= 1.2 * max(1, tune) and drums >= 3:
+    if "drums" in allowed and beats and drums >= (0.6 if loud else 0.75) * len(beats) \
+            and drums >= (0.9 if loud else 1.2) * max(1, tune) and drums >= (2 if loud else 3):
         return "drums"
     return "words"
 
@@ -403,10 +512,82 @@ def _plan_drums(sk, t0, t1, hand, focus, tier_key, rng, wid, min_gap=0.24) -> li
     return out
 
 
+def _voice_events(sk: SK.Skeleton, ph: Phrase, span0: float, span1: float, free: int | None,
+                  tier, focus: str, rng: random.Random, wid: int, vocab, vibes,
+                  fit_words, emit_events, build_cells) -> tuple[list[M.CharEvent], str]:
+    """What plays across one span of a Duo phrase, and the name of the voice it used.
+
+    ``free`` is the hand that is not holding, or None where no hold is down and
+    both hands are the player's own — the second case is what fills the stretches
+    between holds, which used to be silent.
+    """
+    beat = 60.0 / sk.bpm
+    if span1 - span0 < beat:
+        return [], ""
+    voice = "words" if free is None else _voice_for(sk, span0, span1, tier.key, ph)
+    if voice == "stream":
+        fe = _plan_stream(sk, span0, span1, free, focus, tier.key, rng, wid, tier.min_gap, tier.finest)
+    elif voice == "drums":
+        fe = _plan_drums(sk, span0, span1, free, focus, tier.key, rng, wid, tier.min_gap)
+    else:
+        v = {L: ws for L, ws in vocab.items() if L <= tier.max_word_len} if free is None \
+            else hand_vocab(vocab, free, tier.max_word_len)
+        if not v:
+            return [], ""
+        cells = [c for c in build_cells(sk, tier, vibes) if c.t1 > span0 and c.t0 < span1]
+        clipped = []
+        for c in cells:
+            c.slots = [p for p in c.slots if span0 <= p.t < span1]
+            c.cand = [p for p in c.cand if span0 <= p.t < span1]
+            if len(c.slots) >= 2:
+                clipped.append(c)
+        if not clipped:
+            return [], ""
+        fe = emit_events(fit_words(clipped, v, tier, rng), sk, tier)
+        for e in fe:
+            e.section_kind = "anchor_free"
+            if not e.is_rest:
+                e.word_id += wid
+                e.hold_duration = 0.0
+    # no free note may sit on the held hand (a stream/drum voice never does; words are filtered)
+    if free is not None:
+        fe = [e for e in fe if e.is_rest or KB.hand_of(e.char) == free]
+    return fe, voice
+
+
+def _holes(times: list[float], t0: float, t1: float, min_len: float) -> list[tuple[float, float]]:
+    """Stretches of [t0, t1) with no note in them for at least ``min_len``."""
+    pts = [t0] + sorted(t for t in times if t0 < t < t1) + [t1]
+    return [(a, b) for a, b in zip(pts[:-1], pts[1:]) if b - a >= min_len]
+
+
+def _hold_segments(ph: Phrase, holds: list[dict]) -> list[tuple[float, float, set]]:
+    """The phrase cut at every hold edge, each piece labelled with the hands held."""
+    edges = {ph.t0, ph.t1}
+    for h in holds:
+        edges.update((h["t0"], h["t1"]))
+    b = sorted(e for e in edges if ph.t0 - 1e-6 <= e <= ph.t1 + 1e-6)
+    out = []
+    for a, c in zip(b[:-1], b[1:]):
+        if c - a < 1e-3:
+            continue
+        mid = (a + c) / 2
+        out.append((a, c, {h["hand"] for h in holds if h["t0"] <= mid < h["t1"]}))
+    return out
+
+
 def plan_anchor(sk: SK.Skeleton, ph: Phrase, tier, focus: str, rng: random.Random, word_id_start: int,
                 vocab: dict[int, list[WordInfo]], vibes: list[str], fit_words, emit_events, build_cells) -> list[M.CharEvent]:
     """A Duo phrase: the holds the drones dictate, and under each single hold the free hand's
     voice — words on the tune, a stream on the hats, the beat on the drums.
+
+    The phrase is taken away from the word fitter whole, so anything the holds do not cover is
+    silence unless something fills it.  It used not to be filled: the free hand started a beat
+    after the hold and stopped half a beat before the release, a hand-off left a beat of air, a
+    chord left both hands busy, and the run-up to the first hold and the tail after the last got
+    nothing at all — which on Scorpion added up to sixteen beats with no note in them.  The
+    second pass below fills every remaining stretch: with the free hand where one is holding,
+    with ordinary words where neither is.
 
     ``fit_words`` / ``emit_events`` / ``build_cells`` are the engine's, passed in to avoid an
     import cycle.  Returns anchor events (section_kind "anchor") plus free-hand events.
@@ -416,6 +597,7 @@ def plan_anchor(sk: SK.Skeleton, ph: Phrase, tier, focus: str, rng: random.Rando
     events: list[M.CharEvent] = []
     wid = word_id_start
     ph.extra["holds"] = [(round(h["t0"], 3), round(h["t1"], 3), h["hand"], h["key"], h["chord"]) for h in holds]
+    spans: list[tuple[float, float, int]] = []      # (t0, t1, hand) of each hold as placed
     for h in holds:
         t0, t1, hand, key = h["t0"], h["t1"], h["hand"], h["key"]
         down = next((p for p in sk.points_in(t0 - 0.01, t0 + beat * 0.5) if p.sub == 0), None)
@@ -427,40 +609,33 @@ def plan_anchor(sk: SK.Skeleton, ph: Phrase, tier, focus: str, rng: random.Rando
             lane=KB.lane_of(key), word_id=wid, hold_duration=float(dur), section_kind="anchor",
         ))
         wid += 1
+        spans.append((t_anchor, t_anchor + dur, hand))
         if h["chord"]:
             continue                                     # both hands are busy: nothing under a chord
+        # the free hand comes in with the hold, not a beat behind it, and plays up to
+        # the release rather than stopping half a beat short of it
         free = 1 - hand
-        span0, span1 = t_anchor + beat, t_anchor + dur - beat * 0.5
-        if span1 - span0 < beat:
-            continue
-        voice = _voice_for(sk, span0, span1, tier.key)
-        ph.extra.setdefault("voices", []).append(voice)
-        if voice == "stream":
-            fe = _plan_stream(sk, span0, span1, free, focus, tier.key, rng, wid, tier.min_gap, tier.finest)
-        elif voice == "drums":
-            fe = _plan_drums(sk, span0, span1, free, focus, tier.key, rng, wid, tier.min_gap)
-        else:
-            fvocab = hand_vocab(vocab, free, tier.max_word_len)
-            if not fvocab:
-                continue
-            cells = [c for c in build_cells(sk, tier, vibes) if c.t1 > span0 and c.t0 < span1]
-            clipped = []
-            for c in cells:
-                c.slots = [p for p in c.slots if span0 <= p.t < span1]
-                c.cand = [p for p in c.cand if span0 <= p.t < span1]
-                if len(c.slots) >= 2:
-                    clipped.append(c)
-            fe = emit_events(fit_words(clipped, fvocab, tier, rng), sk, tier)
-            for e in fe:
-                e.section_kind = "anchor_free"
-                if not e.is_rest:
-                    e.word_id += wid
-                    e.hold_duration = 0.0                # no nested holds under a hold
-        # no free note may sit on the held hand (a stream/drum voice never does; words are filtered)
-        fe = [e for e in fe if e.is_rest or KB.hand_of(e.char) == free]
+        fe, voice = _voice_events(sk, ph, t_anchor + beat * 0.5, t_anchor + dur - beat * 0.25, free,
+                                  tier, focus, rng, wid, vocab, vibes, fit_words, emit_events, build_cells)
         if fe:
+            ph.extra.setdefault("voices", []).append(voice)
             wid = max([e.word_id for e in fe if not e.is_rest] + [wid]) + 1
             events.extend(fe)
+
+    # ── fill what the holds left behind ──────────────────────────────────────
+    min_hole = MAX_HOLE_BEATS * beat
+    for a, c, held in _hold_segments(ph, [{"t0": t0, "t1": t1, "hand": hd} for t0, t1, hd in spans]):
+        if len(held) >= 2:
+            continue                                     # a chord: no hand is free to play
+        free = (1 - next(iter(held))) if held else None
+        times = [e.timestamp for e in events if not e.is_rest and e.char]
+        for x, y in _holes(times, a, c, min_hole):
+            fe, _voice = _voice_events(sk, ph, x + beat * 0.25, y - beat * 0.25, free,
+                                       tier, focus, rng, wid, vocab, vibes, fit_words, emit_events, build_cells)
+            if fe:
+                wid = max([e.word_id for e in fe if not e.is_rest] + [wid]) + 1
+                events.extend(fe)
+    events.sort(key=lambda e: e.timestamp)
     return events
 
 

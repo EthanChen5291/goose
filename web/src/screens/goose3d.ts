@@ -320,10 +320,18 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     const d = goal.clone().sub(gpos).setY(0)
     const dist = d.length()
     if (dist < 0.3) return true
-    faceToward(d, dt, turn)
+    // The step is taken along the heading, and the heading turns at a fixed rate,
+    // so the walk has a turning circle of about speed/turn — far wider than the
+    // 0.3 it must land inside.  A goal to the side therefore sat inside that
+    // circle and the bird orbited it forever.  So: walk only as much as it is
+    // already facing the goal (`aim`), which makes it turn on the spot first,
+    // and tighten the turn as it closes, which shrinks the circle to nothing.
+    const err = wrapAngle(yawOf(d) - gyaw)
+    faceToward(d, dt, dist < speed * 0.2 ? turn * 2.4 : turn)
     gyaw += Math.sin(t * 9.1) * 0.012
+    const aim = Math.max(0, Math.cos(err))
     const pulse = 0.5 + 0.5 * Math.pow(Math.abs(Math.sin(stride)), 0.7)
-    const v = Math.min(dist / Math.max(dt, 1e-3), speed * pulse * wobble(t))
+    const v = Math.min(dist / Math.max(dt, 1e-3), speed * pulse * wobble(t) * aim)
     gpos.addScaledVector(facing(), v * dt)
     stride += dt * Math.min(40, speed * 0.72) * (0.92 + 0.16 * Math.sin(t * 5.3))
     want = clips.waddle(stride)
@@ -453,14 +461,23 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     if (age < SELFIE_IN + SELFIE_HOLD) {
       // the phone: straight in front of the face, a little above, tilted down — the beak in the middle, very wide
       want = clips.idle(t, beat)
-      const hp = headPos()
       const gs = gooseScale / MENU_SCALE
-      p.selfieCam.copy(hp).addScaledVector(f, 1.9 * gs).add(new THREE.Vector3(0, 0.95 * gs, 0))
-      p.selfieLook.copy(beakPos())
+      // The 0.5 lens: down at the bird's own height and close in, so the body
+      // swells into the bottom of the frame and the head rides small and centred
+      // above it — a phone lying on the grass, stared straight down the barrel of.
+      // Anchored off the beak tip rather than the skull: the beak reaches most of
+      // a goose further forward, and a lens measured from the skull sits behind it.
+      const bk = beakPos()
+      const bc = BODY_CENTRE.y * gooseScale
+      p.selfieCam.copy(bk).addScaledVector(f, 0.55 * gs)
+      p.selfieCam.y = gpos.y + bc * 1.05
+      // framed on the body, not the face: the mass fills the bottom of the frame
+      // and the head rides small in the top third, the beak down the lens
+      p.selfieLook.set(bk.x, gpos.y + bc * 1.5, bk.z)
       const k = easeOut(clamp01(age / SELFIE_IN))
       camera.position.lerpVectors(p.cam0, p.selfieCam, k)
       look.lerpVectors(p.look0, p.selfieLook, k)
-      camera.fov = lerp(p.fov0, 100, k)
+      camera.fov = lerp(p.fov0, 112, k)
       if (age >= SELFIE_IN) {
         // a hand-held shake
         camera.position.x += Math.sin(t * 7) * 0.02
@@ -478,16 +495,21 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       const dir = p.kind === 'right' ? 1 : -1
       const dist = 30 * e + 1300 * e * e
       const dd = 30 * dt + 2600 * e * dt
+      // the plate is the thing doing the racing, not a thing being thrown: it stays
+      // dead flat and simply leaves, shuddering on its axis as it goes
       plate.g.position.set(plate.pos.x + dir * dist, plate.pos.y + Math.sin(e * 18) * 0.4, plate.pos.z)
-      plate.g.rotation.x += dt * 7 * dir
-      plate.g.rotation.z += dt * (p.kind === 'right' ? 2 : -5)
+      plate.g.rotation.set(0, 0, 0)
       gpos.x += dir * dd
       gpos.y = PLATE_TOP + 0.3 + Math.abs(Math.sin(e * 24)) * 0.5
       faceToward(new THREE.Vector3(dir, 0, 0), dt, 30)
-      want = clips.panic(t)
-      // smear frames: on two frames in three the bird is drawn long, the way a flash animation draws speed
-      const fr = Math.floor(e * 14) % 3
-      smear(fr === 1 ? 2.6 : fr === 2 ? 1.6 : 1, fr === 1 ? 0.55 : fr === 2 ? 0.8 : 1)
+      // drawn, not tweened: the pose steps on twos and the cycle is four drawings —
+      // a squash as it takes the hit, a long smear, a half smear, then a held frame
+      const drawT = Math.floor(t * 12) / 12
+      want = clips.panic(drawT)
+      cur = want
+      snapPose = true
+      const fr = Math.floor(e * 12) % 4
+      smear([0.74, 3.2, 1.7, 1][fr], [1.22, 0.5, 0.77, 1][fr])
       if (t - p.lastBang > 0.2) { p.lastBang = t; emote(Math.random() < 0.7 ? 'bang' : 'quest', t, 0.5) }
       // a continuous trail: feathers every frame, cloud behind
       feathers.spawn(gpos.clone().add(new THREE.Vector3(-dir * 1.5, 1.2, 0)), 2, t, new THREE.Vector3(-dir * 14, 3, 0), 6)
@@ -598,7 +620,11 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   const GRAV = 70
   const MAP_SPEED = 60
   /** the ball's bounce: what it keeps of its lift, of its run, of its spin; and how hard the grass slows the roll */
-  const BOUNCE_UP = 0.36, BOUNCE_RUN = 0.42, BOUNCE_SPIN = 0.75, ROLL_DRAG = 90
+  const BOUNCE_UP = 0.36, BOUNCE_RUN = 0.42, BOUNCE_SPIN = 0.75, ROLL_DRAG = 32
+  /** the roll is over below this: the solver and the live roll must agree on it */
+  const ROLL_STOP = 1.2
+  /** the beat it lies there, dizzy, before it picks itself up */
+  const GETUP_REST = 0.6
   /** how far the ball travels after it first hits, arriving at `run` along the ground and `fall` downward */
   const rollDistance = (run: number, fall: number): number => {
     let x = 0, y = ballR(), vx = run, vy = fall
@@ -610,7 +636,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       if (y <= ballR()) {
         y = ballR()
         if (vy < -6 || first) { vy = Math.abs(vy) * BOUNCE_UP; vx *= BOUNCE_RUN; first = false }
-        else { vy = 0; vx = Math.max(0, vx - ROLL_DRAG * dt); if (vx < 3) break }
+        else { vy = 0; vx = Math.max(0, vx - ROLL_DRAG * dt); if (vx < ROLL_STOP) break }
       }
     }
     return x
@@ -620,7 +646,9 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     const th = Math.random() * TAU
     const dir = new THREE.Vector3(Math.cos(th), 0, Math.sin(th))
     // it comes to rest above the line of stones — further from the camera — so it has a walk ahead of it
-    const rest = new THREE.Vector3(tp.x + (Math.random() - 0.5) * 14, 0, tp.z - (10 + Math.random() * 6))
+    // pulled back toward the middle of the path (the stones run x -27..27) so the
+    // roll finishes on screen instead of out past the first or the last stone
+    const rest = new THREE.Vector3(tp.x * 0.55 + (Math.random() - 0.5) * 10, 0, tp.z - (4.5 + Math.random() * 4))
     const speed = 150
     const drop = 16 + Math.random() * 12
     const reach = 150
@@ -681,7 +709,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
         if (ns > 0.5) arr.lastDir.set(arr.vel.x, 0, arr.vel.z).normalize()
         arr.ang.copy(UP).cross(arr.vel).divideScalar(ballR())
         if (!arr.skidFrom) { arr.skidFrom = arr.pos.clone().setY(0); skid.visible = true }
-        if (ns < 3) {
+        if (ns < ROLL_STOP) {
           arr.phase = 'getup'
           arr.t0 = t
           arr.fromQuat.copy(arr.quat)
@@ -707,7 +735,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     want = clips.stiff()
   }
   const tickGetup = (t: number): void => {
-    const u = clamp01((t - arr.t0) / 0.45)
+    const u = clamp01((t - arr.t0 - GETUP_REST) / 0.45)
     const target = new THREE.Quaternion().setFromAxisAngle(UP, arr.yawTarget)
     arr.quat.copy(arr.fromQuat).slerp(target, smooth(u))
     arr.pos.y = ballR()
@@ -880,6 +908,10 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   const heroHead = new THREE.Vector3()
   const heroElbow = new THREE.Vector3()
   const heroShoulder = new THREE.Vector3()
+  const heroAbs = new THREE.Vector3()
+  const heroChest = new THREE.Vector3()
+  const heroArm = new THREE.Vector3()
+  const heroOut = new THREE.Vector3()
   const tickWin = (t: number, beat: number): void => {
     const age = t - modeT0
     // the body: the bird drops away in three steps and the hero grows in three — a third of a second, unremarked
@@ -924,23 +956,40 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     const hf = new THREE.Vector3(Math.cos(hero.root.rotation.y), 0, -Math.sin(hero.root.rotation.y))
     const hs = new THREE.Vector3(Math.sin(hero.root.rotation.y), 0, Math.cos(hero.root.rotation.y))
     if (i === 0) {
-      // the boots, from the grass, close — tilting up the legs to the waist
-      camera.position.set(0, lerp(0.7, 1.9, u), 0).addScaledVector(hf, lerp(5.2, 4.6, u)).addScaledVector(hs, lerp(4.8, 4.2, u))
-      look.set(0.4, lerp(0.9, 4.6, u), 0)
-      camRoll = 0.16
-      camera.fov = 46
+      // the body, close enough to touch: a slow climb up the front, the abs and
+      // then the pec line passing the lens — the muscle is the establishing shot
+      hero.spine.localToWorld(heroAbs.set(7.2, 2.6, 0))
+      hero.spine.localToWorld(heroChest.set(7.2, 11.8, 0))
+      look.lerpVectors(heroAbs, heroChest, smooth(u))
+      camera.position.copy(look)
+        .addScaledVector(hf, lerp(7.8, 6.8, u))
+        .addScaledVector(hs, lerp(4.9, 4.0, u))
+        .add(new THREE.Vector3(0, lerp(-0.7, 0.5, u), 0))
+      camRoll = 0.12
+      camera.fov = 34
     } else if (i === 1) {
-      // the flexed arm and the chest, from the side, panning up the bicep to the shoulder
+      // the flexed arm, from the side, panning up the bicep to the shoulder
+      // framed from outside the arm, whichever way the stance threw it, so the
+      // lens never ends up inside the shoulder
       hero.elbow[1].getWorldPosition(heroElbow)
       hero.shoulder[1].getWorldPosition(heroShoulder)
-      camera.position.copy(heroElbow).add(new THREE.Vector3(0, lerp(-2.0, 0.6, u), 0)).addScaledVector(hf, 3.4).addScaledVector(hs, lerp(7.6, 6.6, u))
-      look.lerpVectors(heroElbow, heroShoulder, smooth(u)).addScaledVector(hf, 0.6).add(new THREE.Vector3(0, 0.2, 0))
+      hero.spine.getWorldPosition(heroChest)
+      heroArm.copy(heroShoulder).lerp(heroElbow, 0.5)
+      heroOut.copy(heroArm).sub(heroChest)
+      heroOut.y = 0
+      if (heroOut.lengthSq() < 1e-4) heroOut.copy(hs)
+      heroOut.normalize()
+      camera.position.copy(heroArm)
+        .addScaledVector(heroOut, lerp(6.6, 5.8, u))
+        .addScaledVector(hf, 3.4)
+        .add(new THREE.Vector3(0, lerp(-1.2, 0.9, u), 0))
+      look.lerpVectors(heroElbow, heroShoulder, smooth(u)).add(new THREE.Vector3(0, 0.2, 0))
       camRoll = -0.1
-      camera.fov = 36
+      camera.fov = 34
     } else {
-      // the face: three-quarter front, pushing in, the scowl and the kanji
-      camera.position.copy(heroHead).add(new THREE.Vector3(0, 0.9, 0)).addScaledVector(hf, lerp(6.4, 5.4, u)).addScaledVector(hs, lerp(5.0, 4.3, u))
-      look.copy(heroHead).addScaledVector(hf, 0.5).add(new THREE.Vector3(0, -0.2, 0))
+      // the face: three-quarter front, pushing in — a small head now, so close in
+      camera.position.copy(heroHead).add(new THREE.Vector3(0, 0.35, 0)).addScaledVector(hf, lerp(3.8, 3.1, u)).addScaledVector(hs, lerp(3.0, 2.4, u))
+      look.copy(heroHead).addScaledVector(hf, 0.5).add(new THREE.Vector3(0, -0.05, 0))
       camRoll = 0.07
       camera.fov = 36
     }

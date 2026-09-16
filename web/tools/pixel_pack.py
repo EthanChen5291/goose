@@ -279,20 +279,25 @@ def pack_fx() -> dict:
 
 
 def pack_fx_offline() -> dict:
-    """The same, from the repo copies only (the pack folder is not on every machine)."""
+    """The same, from the repo copies only (the pack folder is not on every machine).
+    The `_s` companions are cached beside their large strips, so they are packed
+    here too: `pack_fx` derives them from the pack, and without the same step a
+    repack on a machine that lacks the pack would quietly drop every hit-sized
+    effect the characters use."""
     out = {}
     os.makedirs(os.path.join(OUT, "fx"), exist_ok=True)
     fx_local = os.path.join(SRC, "fx")
     for name in FX:
-        local = os.path.join(fx_local, f"{name}.png")
-        meta_p = local[:-4] + ".json"
-        if not (os.path.exists(local) and os.path.exists(meta_p)):
-            continue
-        m = json.load(open(meta_p))
-        im = load(local)
-        shutil.copyfile(local, os.path.join(OUT, "fx", f"{name}.png"))
-        out[name] = {"url": f"px/fx/{name}.png", "fw": m["fw"], "fh": m["fh"],
-                     "n": im.width // m["fw"], "fps": FX_FPS}
+        for n in (name, name + "_s"):
+            local = os.path.join(fx_local, f"{n}.png")
+            meta_p = local[:-4] + ".json"
+            if not (os.path.exists(local) and os.path.exists(meta_p)):
+                continue
+            m = json.load(open(meta_p))
+            im = load(local)
+            shutil.copyfile(local, os.path.join(OUT, "fx", f"{n}.png"))
+            out[n] = {"url": f"px/fx/{n}.png", "fw": m["fw"], "fh": m["fh"],
+                      "n": im.width // m["fw"], "fps": FX_FPS}
     print(f"fx (offline): {len(out)} strips")
     return out
 
