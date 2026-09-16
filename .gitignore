@@ -22,6 +22,6 @@ web/.scratch/
 /*.mp3
 /*.wav
 
-# the web client's build and its derived assets (web/.gitignore has the rest)
-web/node_modules/
+# node, wherever it lands (web/.gitignore covers the client's derived assets)
+node_modules/
 web/dist/
