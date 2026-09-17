@@ -56,28 +56,21 @@ class Cut(NamedTuple):
     peak_db: float | None = None
 
 
-# The menu theme.  The track is 165 bpm and its drop is its first beat, so the
-# cut starts there and runs a whole 72 bars, which is every bar the track has.
-# Looping the file end to end is then the whole of it, in time.
+# The menu theme.  The master is rendered as the loop: it opens on the downbeat
+# — sample zero is silence and the bar is already playing by the millisecond
+# after it — runs a whole 72 bars at 165 bpm, and is followed only by the last
+# note ringing out.  So there is nothing to trim off the front, and `dur` is the
+# whole track: the cut is the loop, and it repeats end to end, in time.
+#
+# A `start` here is worth measuring again whenever the track is replaced.  The
+# one this file carried before was a beat and a bit into the new master, which
+# took bar 1 off the front and pushed the cut that far past the end — the loop
+# opened a beat late and ran out into the ring-out, so it played as though it
+# had dropped a beat every pass.  Nothing at runtime can notice that; it only
+# ever sounds slightly wrong.
 THEME_BPM = 165
 THEME = Cut(os.path.join("built-in", "goose.wav"), "theme.mp3",
-            start=0.3468, dur=72 * 4 * 60 / THEME_BPM)
-
-# What `start` trims is not room tone: it is a beat of sustained bass with no
-# attack in it, at the level of the drop and carrying the drop's own low end.
-# It is the track's pickup — the lift the master renders ahead of bar 1 — and
-# where it belongs is the end of a pass, not the front of the file.
-#
-# It has to go somewhere, because the track was written to end rather than to
-# come round again: the last note lands on beat 287 and rings out, so the
-# closing 3/4 beat is decay alone.  The file is a whole 72 bars and the seam is
-# on the grid, but with nothing driving into the downbeat the ear hears the loop
-# drop a beat.  Mixing the pickup in over that ring — rather than replacing it,
-# so the ending still decays under it — is the lift the loop point was missing,
-# in the composer's own hand.  The cut then ends on a 4 ms ramp, because where
-# there used to be near-silence to splice there is now the bass of the drop.
-THEME_PICKUP_FADE = 0.02  # seconds: the pickup in, under the ring it joins
-THEME_END_FADE = 0.004    # seconds: the splice out, into the loop's downbeat
+            dur=72 * 4 * 60 / THEME_BPM)
 
 # The recorded effects.  The waddles open on a moment of room tone that lands as
 # a late footstep, so each starts at its first real step; -4.4 dBFS is the level
@@ -152,30 +145,6 @@ def encode_args(src: str, dst: str, peak_db: float | None = None,
         lift = ["-af", f"highpass=f=40,volume={gain_db:.1f}dB", "-ac", "1"]
     return ["ffmpeg", "-v", "error", "-y", "-i", src, *cut, *lift,
             "-codec:a", "libmp3lame", "-b:a", AUDIO_BITRATE, "-map_metadata", "-1", dst]
-
-
-def theme_args(src: str, dst: str) -> list[str]:
-    """The ffmpeg call that writes the looping menu theme.
-
-    The 72-bar cut, with the pickup `start` trims moved to the end of it: the
-    same master, trimmed twice and mixed, so every pass lifts into the downbeat
-    it returns to.  Like `encode_args`, it is the whole recipe and nothing done
-    yet, so the splice can be read — and tested — without an encoder.
-    """
-    dur = THEME.dur
-    pickup = THEME.start          # the master runs bar 1 from here, so this is its length
-    graph = (
-        f"[0:a]atrim=start={THEME.start:.6f}:duration={dur:.6f},"
-        f"asetpts=PTS-STARTPTS[body];"
-        f"[0:a]atrim=start=0:duration={pickup:.6f},"
-        f"asetpts=PTS-STARTPTS,afade=t=in:st=0:d={THEME_PICKUP_FADE},"
-        f"adelay={(dur - pickup) * 1000:.1f}:all=1[lift];"
-        f"[body][lift]amix=inputs=2:duration=first:normalize=0,"
-        f"afade=t=out:st={dur - THEME_END_FADE:.6f}:d={THEME_END_FADE}[out]"
-    )
-    return ["ffmpeg", "-v", "error", "-y", "-i", src, "-filter_complex", graph,
-            "-map", "[out]", "-codec:a", "libmp3lame", "-b:a", AUDIO_BITRATE,
-            "-map_metadata", "-1", dst]
 
 
 def transcode(src: str, dst: str, peak_db: float | None = None,
@@ -307,13 +276,7 @@ def main() -> None:
             if not os.path.exists(src):
                 print("skip (missing)", cut.src)
                 continue
-            dst = os.path.join(out_dir, cut.out)
-            if cut is THEME:
-                # the theme is a cut and a splice, not a cut alone
-                if is_stale(src, dst, os.path.getmtime(__file__)):
-                    subprocess.run(theme_args(src, dst), check=True)
-                continue
-            transcode(src, dst, cut.peak_db, cut.start, cut.dur,
+            transcode(src, os.path.join(out_dir, cut.out), cut.peak_db, cut.start, cut.dur,
                       recipe=os.path.getmtime(__file__))
 
     for src_rel, dst_name in FONTS:

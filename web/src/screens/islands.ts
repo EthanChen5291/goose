@@ -21,6 +21,7 @@ import { BIOMES } from './biomes'
 import type { Biome } from './biomes'
 import { rng } from './goose_world'
 import { buildRevealShow } from './reveal_fx'
+import { buildHorizon } from './horizon'
 
 /** where each biome hangs, in the order of `BIOMES` */
 // all of them under the line the goose flies (the plates' height): the drone comes in over the archipelago, never under it
@@ -203,6 +204,9 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
     }
   }
 
+  // ── the horizon: what is out past the islands, every way ───────────────
+  buildHorizon(kit, root, q, cloudMat)
+
   // ── the wall, and the hole the bird left in it ──────────────────────────
   // A curtain of cloud across the way, with a bird-shaped hole punched through
   // it at plate height (wings out, feet down, the plate a slot underneath) —
@@ -274,6 +278,14 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
     coarseF.commit(false); fineF.commit(false); fluffF.commit(false)
   }
   partWall(0)
+  // and once the drone is through and past it, the curtain is gone: from out over the islands the way back is open sky
+  // and sea, not the back of a wall of cloud
+  let wallOn = true
+  const showWall = (on: boolean): void => {
+    if (on === wallOn) return
+    wallOn = on
+    coarseF.mesh.visible = fineF.mesh.visible = fluffF.mesh.visible = on
+  }
 
   // ── the mainland's edge: rock under the meadow, down to the sea ─────────
   const ROCKS = [0x7d6858, 0x8c7462, 0x6b5a4e, 0x9a806c]
@@ -350,6 +362,7 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
       // the cloud round the hole slides aside as the drone comes at it, and stays open while it is past
       const pk = clamp01((from.x - (WALL.x - 150)) / 100)
       partWall(pk * pk * (3 - 2 * pk))
+      showWall(from.x < WALL.x + 40)
       for (let i = 0; i < SPARK; i++) {
         const sp = sparkAt[i]
         const on = ((t * 0.6 + sp.ph) % 1) < 0.07 + show * 0.1

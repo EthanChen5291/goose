@@ -175,7 +175,14 @@ export function buildTitle(opts: TitleOptions): { el: HTMLElement; stop: () => v
   void opts.movie.then((mv) => {
     if (!alive) return
     movie = mv
-    mv.menu(items.length, cur)
+    // from out over the islands the meadow is a journey away: the furniture waits for it, and so do the keys
+    pressing = true
+    px.root.classList.add('arriving')
+    void mv.menu(items.length, cur).then(() => {
+      if (!alive) return
+      pressing = false
+      px.root.classList.remove('arriving')
+    })
     stage.prepend(mv.el)
     mv.resize(px.w, px.h)
     // the phone's flash: a white frame, on the movie's cue

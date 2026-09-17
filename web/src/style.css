@@ -463,6 +463,9 @@ kbd {
 .pxroot.intro .px-brand { opacity: 0; transform: scale(1.22); }
 .pxroot.intro .px-corner, .pxroot.intro .plate-layer { opacity: 0; }
 .pxroot.intro .plate-btn { pointer-events: none; }
+/* and on the way back from the islands, it waits for the meadow to be put down */
+.pxroot.arriving .px-brand, .pxroot.arriving .px-corner, .pxroot.arriving .plate-layer { opacity: 0; }
+.pxroot.arriving .plate-btn { pointer-events: none; }
 
 /* the kit's bars, in game pixels (the pause screen sizes the same bars by --k) */
 .pxstage .pbtn {

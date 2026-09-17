@@ -33,19 +33,14 @@ def test_the_theme_is_a_whole_number_of_bars(export):
     assert round(bars) == 72
 
 
-def test_the_theme_starts_on_its_first_beat(export):
-    """The track opens on its drop; the room tone before it is what start trims."""
-    assert 0.3 < export.THEME.start < 0.4
+def test_the_theme_is_not_trimmed_at_the_front(export):
+    """The master opens on the downbeat, so anything trimmed here is bar 1.
 
-
-def test_the_theme_pickup_is_about_a_beat_long(export):
-    """What start trims is the master's lift into bar 1, and it is used as such.
-
-    A pickup that came out longer than a beat would be trimming music, and one
-    much shorter would not reach the ring it is mixed over.
+    A trim measured against an older track is the failure this guards: it takes
+    that much music off the front and runs the cut that far past the end, and
+    the loop then plays as though it drops a beat every pass.
     """
-    beat = 60 / export.THEME_BPM
-    assert 0.8 * beat < export.THEME.start <= beat
+    assert export.THEME.start == 0.0
 
 
 def test_every_waddle_is_trimmed_and_levelled(export):
@@ -109,48 +104,3 @@ def test_a_levelled_file_is_lifted_and_folded_to_mono(export):
     args = export.encode_args("in.wav", "out.mp3", peak_db=-4.4, gain_db=21.7)
     assert args[args.index("-af") + 1] == "highpass=f=40,volume=21.7dB"
     assert args[args.index("-ac") + 1] == "1"
-
-
-def test_the_theme_is_cut_and_spliced_in_one_pass(export):
-    """Both halves come out of the same master, so both trims are on [0:a]."""
-    args = export.theme_args("in.wav", "out.mp3")
-    graph = args[args.index("-filter_complex") + 1]
-    assert graph.count("[0:a]atrim") == 2
-    assert args[args.index("-map") + 1] == "[out]"
-    assert "libmp3lame" in args and args[-1] == "out.mp3"
-
-
-def test_the_theme_takes_its_lift_from_the_head_of_the_master(export):
-    """The pickup is what start trims, so the second trim opens at zero."""
-    args = export.theme_args("in.wav", "out.mp3")
-    graph = args[args.index("-filter_complex") + 1]
-    assert f"atrim=start=0:duration={export.THEME.start:.6f}" in graph
-
-
-def test_the_theme_lift_ends_exactly_where_the_cut_does(export):
-    """A pickup delayed to the wrong beat is the dropped beat, moved.
-
-    It has to land so its last sample is the cut's last sample; anywhere else
-    and the loop either doubles a beat or keeps the hole it was cut to close.
-    """
-    args = export.theme_args("in.wav", "out.mp3")
-    graph = args[args.index("-filter_complex") + 1]
-    delay = float(graph.split("adelay=")[1].split(":")[0]) / 1000
-    assert delay + export.THEME.start == pytest.approx(export.THEME.dur, abs=1e-3)
-
-
-def test_the_theme_lift_is_mixed_under_the_ring_it_joins(export):
-    """Replacing the ending would cut the decay off; amix keeps it."""
-    args = export.theme_args("in.wav", "out.mp3")
-    graph = args[args.index("-filter_complex") + 1]
-    assert "amix=inputs=2:duration=first:normalize=0" in graph
-    assert f"afade=t=in:st=0:d={export.THEME_PICKUP_FADE}" in graph
-
-
-def test_the_theme_ends_on_a_ramp_into_the_downbeat(export):
-    """The fill is live audio where near-silence used to hide the splice out."""
-    args = export.theme_args("in.wav", "out.mp3")
-    graph = args[args.index("-filter_complex") + 1]
-    start = float(graph.split("afade=t=out:st=")[1].split(":")[0])
-    assert start == pytest.approx(export.THEME.dur - export.THEME_END_FADE, abs=1e-6)
-    assert export.THEME_END_FADE < 0.01, "a longer ramp is a dip you can hear"
