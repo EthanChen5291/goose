@@ -308,6 +308,8 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
   const arch = buildArchipelago(kit, scene, (n) => cue(n), HOLE)
   const drone = new Drone()
   const aimF = new THREE.Vector3()
+  /** how much of a show the sky puts on: full through the reveal, less on a flight, a simmer once landed */
+  let showK = 0
   /** how far ahead the light's focus sits, eased so a new look target never yanks the shadows */
   let lookDist = 60
   // the streak the thrown bird leaves: segments laid along its roll, in the ground's own colour, wandering as the ground allows
@@ -851,10 +853,10 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     // lobbed up over the rim from below, or flat and fast from level
     const rise = gY - (travel?.fromY ?? gY)
     let speed: number, drop: number, reach: number
-    if (from) { speed = from.speed ?? 150; drop = from.drop; reach = from.reach }
-    else if (rise < -12) { speed = 105; drop = 22 + Math.min(40, -rise * 0.45); reach = 120 }
-    else if (rise > 12) { speed = 75; drop = -10; reach = 90 }
-    else { speed = 150; drop = 16 + Math.random() * 12; reach = 150 }
+    if (from) { speed = from.speed ?? 190; drop = from.drop; reach = from.reach }
+    else if (rise < -12) { speed = 140; drop = 22 + Math.min(40, -rise * 0.45); reach = 130 }
+    else if (rise > 12) { speed = 100; drop = -10; reach = 100 }
+    else { speed = 200; drop = 16 + Math.random() * 12; reach = 160 }
     const tf = reach / speed
     const vy0 = (ballR() - drop + 0.5 * GRAV * tf * tf) / tf
     const fall = vy0 - GRAV * tf
@@ -892,7 +894,6 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     if (isle.collide && isle.collide(arr.pos, arr.vel, ballR())) {
       // off a wall: a knock, and whatever the wall gives off
       cue('thud')
-      drone.shake(0.2, 0.2)
       landBits.spawn(arr.pos.clone(), 6, t, new THREE.Vector3(0, 2, 0), 7 * land.spray)
       feathers.spawn(arr.pos, 3, t, new THREE.Vector3(0, 3, 0), 5)
       arr.ang.multiplyScalar(0.7)
@@ -912,7 +913,6 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
         arr.ang.multiplyScalar(BOUNCE_SPIN)
         arr.bounces += 1
         cue('thud')
-        drone.shake(0.25, 0.25)
         landBits.spawn(new THREE.Vector3(arr.pos.x, gY + 0.4, arr.pos.z), 7, t, new THREE.Vector3(0, 3 * land.spray, 0), 6 * land.spray)
         feathers.spawn(arr.pos, 4, t, new THREE.Vector3(0, 5, 0), 6)
         // the dent where it hit
@@ -1098,8 +1098,8 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       eyeTmp.copy(tv.look0).lerp(eyeTop, smooth(clamp01((t - tv.t0) / 1.1))).lerp(isle.cam.look, smooth(clamp01((u - 0.6) / 0.4)))
       drone.lookAt(eyeTmp)
       if (t > tv.t0) drone.setFov(tv.fov)
-      // thrown a beat before the drone gets there, so the landing is what it arrives on; a door waits to be opened first
-      if (!tv.thrown && !isle.arrive && drone.remaining() < 150) { if (tv.pending) unpark(tv); tv.thrown = true; startArrival(nodeSel, t) }
+      // thrown as the drone eases onto its mark, so the landing is what the settled shot opens on; a door waits to be opened first
+      if (!tv.thrown && !isle.arrive && drone.remaining() < 30) { if (tv.pending) unpark(tv); tv.thrown = true; startArrival(nodeSel, t) }
       // near enough: the chrome comes in while the drone is still easing onto its mark
       if (drone.settled(9, 18)) {
         if (isle.arrive) { tv.until = t + isle.arrive(t); tv.stage = 'arrive'; drone.shake(0.5, 0.35) }
@@ -1173,7 +1173,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
       if (t - c.phaseT0 > 0.25) {
         c.phase = 'go'; c.phaseT0 = t
         // flat out, dead level, at the hole
-        drone.fly(new THREE.Vector3(WALL.x + 150, HOLE.y + 16, HOLE.z), { cruise: 270, accel: 170, sloppy: 2.5, hesitate: 0, fov: 60 })
+        drone.fly(new THREE.Vector3(WALL.x + 150, HOLE.y + 16, HOLE.z), { cruise: 215, accel: 140, sloppy: 2.5, hesitate: 0, fov: 60 })
         drone.lookAt(new THREE.Vector3(WALL.x + 220, HOLE.y + 12, HOLE.z))
       }
     } else if (c.phase === 'go') {
@@ -1184,7 +1184,7 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
         drone.lookAt(arch.vista.look)
         cue('reveal')
         travel = { stage: 'fly', until: 0, thrown: false, resolvers: c.resolvers, pending: null, from: null, start: drone.pos.clone(), t0: t + 0.7, look0: arch.vista.look.clone(), fov: isle.cam.fov, fromY: HOLE.y }
-        drone.follow(pathTo(isle, drone.pos, drone.vel), { cruise: 150, accel: 190, sloppy: 3, fov: arch.vista.fov, hesitate: 0 })
+        drone.follow(pathTo(isle, drone.pos, drone.vel), { cruise: 120, accel: 150, sloppy: 3, fov: arch.vista.fov, hesitate: 0 })
         chase = null
         mode = 'map'
       }
@@ -1465,7 +1465,10 @@ export async function gooseMovie(manifest: Manifest): Promise<GooseMovie> {
     sun.target.position.copy(focus)
     sun.position.copy(focus).add(SUN_OFF)
     if (far) {
-      arch.tick(t, dt, camera.position)
+      const reveal = mode === 'chase' ? drone.pos.x > WALL.x - 80 : travel?.from === null && travel?.stage === 'fly'
+      const showWant = reveal ? 1 : travel && travel.stage !== 'settled' ? 0.5 : 0.22
+      showK += (showWant - showK) * (1 - Math.exp(-dt * (showWant > showK ? 2.5 : 0.7)))
+      arch.tick(t, dt, camera.position, showK)
       // the sky is whatever is near, lit by any lightning
       const pal = arch.palette(camera.position, WORLDS[0])
       const fl = arch.flash(camera.position)

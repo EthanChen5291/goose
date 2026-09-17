@@ -212,7 +212,9 @@ export class Drone {
     this.correctionGoal.multiplyScalar(Math.exp(-dt * 1.4))
     this.correction.lerp(this.correctionGoal, 1 - Math.exp(-dt * 5))
     const wander = this.sloppy * (0.25 + 0.75 * k)
-    this.off.copy(this.correction)
+    // on a curve the plan is the pilot's: the hand still wanders, but there are no stick corrections to nudge the frame
+    if (this.path) this.off.set(0, 0, 0)
+    else this.off.copy(this.correction)
     this.off.x += Math.sin(t * 0.37 + this.errPhase[0]) * wander
     this.off.y += Math.sin(t * 0.29 + this.errPhase[1]) * wander * 0.5
     this.off.z += Math.sin(t * 0.43 + this.errPhase[2]) * wander

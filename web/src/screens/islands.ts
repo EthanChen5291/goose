@@ -20,6 +20,7 @@ import type { Island, Palette, BiomeCtx, CamPose } from './island_kit'
 import { BIOMES } from './biomes'
 import type { Biome } from './biomes'
 import { rng } from './goose_world'
+import { buildRevealShow } from './reveal_fx'
 
 /** where each biome hangs, in the order of `BIOMES` */
 // all of them under the line the goose flies (the plates' height): the drone comes in over the archipelago, never under it
@@ -50,7 +51,8 @@ export interface Archipelago {
   palette: (from: THREE.Vector3, base: Palette) => Palette
   /** 0..1: a lightning flash somewhere near */
   flash: (from: THREE.Vector3) => number
-  tick: (t: number, dt: number, from: THREE.Vector3) => void
+  /** one frame; `show` is 1 through the reveal and a fraction on the map, and is what the sky's life is scaled by */
+  tick: (t: number, dt: number, from: THREE.Vector3, show: number) => void
 }
 
 export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: string) => void, hole: Hole): Archipelago {
@@ -302,6 +304,7 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
 
   const tmp = new THREE.Vector3()
   const near = (from: THREE.Vector3, i: Island, reach = 200): number => clamp01(1 - (from.distanceTo(i.at) - i.r) / reach)
+  const showFx = buildRevealShow(kit, root, islands, centre, { x: WALL.x, y: hole.y, z: hole.z }, q)
 
   return {
     root, islands, centre,
@@ -334,7 +337,7 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
       for (const i of islands) { const k = (i.g.userData.flash as number | undefined) ?? 0; if (k > 0) f = Math.max(f, k * near(from, i, 260)) }
       return f
     },
-    tick: (t, dt, from) => {
+    tick: (t, dt, from, show) => {
       // the floating ones ride the air, a little, each to its own beat
       islands.forEach((i, k) => {
         if (i.at.y < OCEAN_Y + 10) return
@@ -349,7 +352,7 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
       partWall(pk * pk * (3 - 2 * pk))
       for (let i = 0; i < SPARK; i++) {
         const sp = sparkAt[i]
-        const on = ((t * 0.6 + sp.ph) % 1) < 0.07
+        const on = ((t * 0.6 + sp.ph) % 1) < 0.07 + show * 0.1
         sparks.place(i, sp.x, on ? OCEAN_Y + 1.6 : -9999, sp.z)
       }
       sparks.commit(false)
@@ -361,6 +364,7 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
         const flap = Math.sin(t * 8 + b.ph)
         b.l.rotation.x = flap * 0.7; b.r.rotation.x = -flap * 0.7
       })
+      showFx.tick(t, dt, from, show)
     },
   }
 }

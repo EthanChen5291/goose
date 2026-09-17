@@ -24,11 +24,16 @@ const deg = (r) => (r * 180 / Math.PI)
  * that are not inside an asked-for shake (a landing's thud is a jolt on purpose)
  */
 const rough = (rows) => {
-  let rollRate = 0, yawAcc = 0, accMax = 0, dSpeed = 0, prevYawRate = null, prevT = null
-  for (let i = 1; i < rows.length; i++) {
-    const a = rows[i - 1], b = rows[i]
-    const dt = b[0] - a[0]
+  let rollRate = 0, yawAcc = 0, accMax = 0, dSpeed = 0, posAcc = 0, prevYawRate = null
+  for (let i = 2; i < rows.length; i++) {
+    const a = rows[i - 1], b = rows[i], z = rows[i - 2]
+    const dt = b[0] - a[0], dt0 = a[0] - z[0]
     if (dt <= 0 || dt > 0.04 || b[10]) { prevYawRate = null; continue }
+    // the body's own acceleration, from its positions: a stick nudge shows here as a spike the curve never makes
+    if (dt0 > 0 && dt0 < 0.04 && !a[10]) {
+      const ax = ((b[7] - a[7]) / dt - (a[7] - z[7]) / dt0) / dt, ay = ((b[8] - a[8]) / dt - (a[8] - z[8]) / dt0) / dt, az = ((b[9] - a[9]) / dt - (a[9] - z[9]) / dt0) / dt
+      posAcc = Math.max(posAcc, Math.hypot(ax, ay, az))
+    }
     rollRate = Math.max(rollRate, Math.abs(b[2] - a[2]) / dt)
     const yawRate = Math.atan2(Math.sin(b[4] - a[4]), Math.cos(b[4] - a[4])) / dt
     if (prevYawRate !== null) yawAcc = Math.max(yawAcc, Math.abs(yawRate - prevYawRate) / dt)
@@ -38,7 +43,7 @@ const rough = (rows) => {
   }
   const top = Math.max(...rows.map((r) => r[1]))
   const dur = rows.length ? rows[rows.length - 1][0] - rows[0][0] : 0
-  return `${rows.length} frames ${dur.toFixed(1)}s  top ${top.toFixed(0)}u/s  roll ${deg(rollRate).toFixed(0)}°/s  yaw ${deg(yawAcc).toFixed(0)}°/s²  acc ${accMax.toFixed(0)}  Δv ${dSpeed.toFixed(0)}u/s²`
+  return `${rows.length} frames ${dur.toFixed(1)}s  top ${top.toFixed(0)}u/s  roll ${deg(rollRate).toFixed(0)}°/s  yaw ${deg(yawAcc).toFixed(0)}°/s²  acc ${accMax.toFixed(0)} (pos ${posAcc.toFixed(0)})  Δv ${dSpeed.toFixed(0)}u/s²`
 }
 /** a line per 0.4 s: speed, roll, progress, height */
 const timeline = (rows) => {
@@ -56,9 +61,10 @@ await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 3 }); awai
 let from = await traceLen()
 let t0 = Date.now()
 await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2)
-const shotsDuring = async (prefix, until) => { let i = 0; while (Date.now() < until) { await shot(`${prefix}-${String(i++).padStart(2, '0')}`); await page.waitForTimeout(400) } }
+const STEP = Number(process.env.STEP ?? 400)
+const shotsDuring = async (prefix, until) => { let i = 0; while (Date.now() < until) { await shot(`${prefix}-${String(i++).padStart(2, '0')}`); await page.waitForTimeout(STEP) } }
 const ready = page.waitForSelector('.map-root.in', { timeout: 30000 }).then(() => Date.now() - t0)
-await shotsDuring('chase', t0 + 8000)
+await shotsDuring('chase', t0 + 9000)
 console.log('chase → chrome', (await ready / 1000).toFixed(1), 's')
 await page.waitForTimeout(1500)
 let rows = await page.evaluate((f) => window.__trace.slice(f), from)
