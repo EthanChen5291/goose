@@ -8,7 +8,6 @@
  *   · glints — four-point stars popping off whatever is shiny on each island
  *   · hand-drawn gusts: curling strokes of wind drawn head to tail and blown
  *     across the sky, with petals and leaves riding them
- *   · a rainbow, drawn in band by band as the cloud opens, behind the islands
  *   · hot-air balloons drifting the far sky
  *   · shooting stars over the night ruins
  *
@@ -34,11 +33,11 @@ export function buildRevealShow(kit: Kit, root: THREE.Group, islands: Island[], 
   const tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3()
   const quat = new THREE.Quaternion()
 
-  // ── geese: two skeins, each a V of seven ─────────────────────────────────
+  // ── geese: three skeins, each a V of nine ─────────────────────────────────
   const skeins: Skein[] = []
-  for (let s = 0; s < 2; s++) {
+  for (let s = 0; s < 3; s++) {
     const birds: Bird[] = []
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 9; i++) {
       const g = new THREE.Group()
       const body = kit.box(2.6, 1.0, 1.2, 0x9a9282)
       const neck = kit.box(0.6, 1.5, 0.6, 0x2b2b2b, 1.3, 0.9, 0)
@@ -48,26 +47,26 @@ export function buildRevealShow(kit: Kit, root: THREE.Group, islands: Island[], 
       const l = kit.box(0.9, 0.14, 3.0, 0xb5ada0, 0, 0.3, -1.9)
       const r = kit.box(0.9, 0.14, 3.0, 0xb5ada0, 0, 0.3, 1.9)
       g.add(body, neck, head, cheek, bill, l, r)
-      g.scale.setScalar(1.3)
+      g.scale.setScalar(1.6)
       g.visible = false
       root.add(g)
       birds.push({ g, l, r, ph: q() * 7, row: Math.ceil(i / 2), side: i === 0 ? 0 : i % 2 ? -1 : 1 })
     }
-    skeins.push({ birds, t0: -99, from: new THREE.Vector3(), to: new THREE.Vector3(), dur: 1, next: 3 + s * 5 })
+    skeins.push({ birds, t0: -99, from: new THREE.Vector3(), to: new THREE.Vector3(), dur: 1, next: s * 0.9 })
   }
   const launchSkein = (s: Skein, t: number, from: THREE.Vector3, reveal: boolean): void => {
     if (reveal) {
-      // ahead of the drone as it comes through, crossing the frame from one side to the other over the near islands
+      // close ahead of the drone as it comes through, crossing the frame side to side at its own height, over the near islands
       const side = q() < 0.5 ? 1 : -1
-      s.from.set(from.x + 70 + q() * 60, at.y - 4 + q() * 26, at.z + side * (140 + q() * 40))
-      s.to.set(from.x + 360 + q() * 80, at.y - 30 + q() * 30, at.z - side * (150 + q() * 60))
+      s.from.set(from.x + 30 + q() * 50, from.y - 12 + q() * 22, from.z + side * (60 + q() * 50))
+      s.to.set(from.x + 300 + q() * 80, from.y - 34 + q() * 30, from.z - side * (90 + q() * 60))
     } else {
       const a = q() * TAU
       s.from.set(centre.x + Math.cos(a) * 320, 60 + q() * 40, centre.z + Math.sin(a) * 320)
       s.to.set(centre.x - Math.cos(a) * 320, 60 + q() * 40, centre.z - Math.sin(a) * 320)
     }
     s.t0 = t
-    s.dur = s.from.distanceTo(s.to) / (reveal ? 58 : 34)
+    s.dur = s.from.distanceTo(s.to) / (reveal ? 74 : 34)
     for (const b of s.birds) b.g.visible = true
   }
   const tickSkeins = (t: number, dt: number, from: THREE.Vector3, show: number): void => {
@@ -75,10 +74,10 @@ export function buildRevealShow(kit: Kit, root: THREE.Group, islands: Island[], 
       const u = (t - s.t0) / s.dur
       if (u > 1) {
         for (const b of s.birds) b.g.visible = false
-        // through the reveal they go up at once, but only while the islands are still ahead: never across a settled shot
-        const reveal = show > 0.7 && from.x < centre.x - 300
-        s.next -= dt * (reveal ? 6 : 1)
-        if (s.next <= 0) { launchSkein(s, t, from, reveal); s.next = 14 + q() * 16 }
+        // through the reveal they go up at once, one after another, the whole way in: never across a settled shot
+        const reveal = show > 0.7
+        s.next -= dt * (reveal ? 8 : 1)
+        if (s.next <= 0) { launchSkein(s, t, from, reveal); s.next = reveal ? 6 + q() * 6 : 14 + q() * 16 }
         continue
       }
       tmp.copy(s.to).sub(s.from)
@@ -119,7 +118,7 @@ export function buildRevealShow(kit: Kit, root: THREE.Group, islands: Island[], 
       const island = islands.find((i) => i.inside(a.x, a.z))
       const y = a.y + (island ? island.at.y + island.bob : 0) + 1.2
       const age = t - a.t0
-      if (age > 0.3 && Math.random() < dt * (0.12 + show * 1.6)) a.t0 = t
+      if (age > 0.3 && Math.random() < dt * (0.12 + show * 3.2)) a.t0 = t
       const life = t - a.t0
       const s = life < 0.1 ? 1.2 : life < 0.2 ? 2.6 : life < 0.3 ? 1.2 : 0
       if (s === 0) { glints.place(k * 2, 0, -9999, 0); glints.place(k * 2 + 1, 0, -9999, 0) }
@@ -129,7 +128,7 @@ export function buildRevealShow(kit: Kit, root: THREE.Group, islands: Island[], 
   }
 
   // ── gusts: strokes of wind, drawn head to tail, blown across ─────────────
-  const CURLS = 7, DOTS = 14
+  const CURLS = 11, DOTS = 14
   const curlField = new CellField(CURLS * DOTS, 0.8, 0.8, 0.8, kit.glowMat(0xf6fbff))
   root.add(curlField.mesh)
   const curls: (Curl | null)[] = Array.from({ length: CURLS }, () => null)
@@ -146,7 +145,7 @@ export function buildRevealShow(kit: Kit, root: THREE.Group, islands: Island[], 
     for (let s = 0; s < CURLS; s++) {
       const c = curls[s]
       if (!c) {
-        if (Math.random() < dt * (0.25 + show * 2.2)) spawnCurl(s, t, from, show)
+        if (Math.random() < dt * (0.25 + show * 3.5)) spawnCurl(s, t, from, show)
         else for (let j = 0; j < DOTS; j++) curlField.place(s * DOTS + j, 0, -9999, 0)
         continue
       }
@@ -179,7 +178,7 @@ export function buildRevealShow(kit: Kit, root: THREE.Group, islands: Island[], 
   const petals: Petal[] = Array.from({ length: PETALS }, (_, i) => { petalField.set(i, 0, -9999, 0, 1, PETAL_COLORS[i % PETAL_COLORS.length]); return { x: 0, y: -9999, z: 0, vx: 0, vz: 0, ph: q() * 7, born: -9, alive: false } })
   petalField.commit()
   const tickPetals = (t: number, dt: number, from: THREE.Vector3, show: number): void => {
-    let spawn = Math.random() < dt * (1 + show * 14) ? 1 : 0
+    let spawn = Math.random() < dt * (1 + show * 24) ? 1 : 0
     petals.forEach((p, i) => {
       if (!p.alive && spawn > 0) {
         spawn = 0
@@ -197,50 +196,22 @@ export function buildRevealShow(kit: Kit, root: THREE.Group, islands: Island[], 
     petalField.commit(false)
   }
 
-  // ── the rainbow: six bands, drawn in from one foot as the cloud opens ────
-  const BANDS = [0xff6b6b, 0xffb35c, 0xffe66d, 0x8ee07a, 0x6ac8ff, 0xb48cff]
-  const SEGS = 30
-  const bow = new CellField(BANDS.length * SEGS, 1, 1, 1, kit.glowMat(0xffffff))
-  root.add(bow.mesh)
-  const bowAt = new THREE.Vector3(centre.x + 210, -20, centre.z + 20)
-  const BOW_R = 230
-  BANDS.forEach((c, b) => { for (let s = 0; s < SEGS; s++) bow.set(b * SEGS + s, 0, -9999, 0, 1, c) })
-  bow.commit()
-  let bowK = 0
-  const tickBow = (dt: number, show: number): void => {
-    const want = show > 0.6 ? 1 : 0
-    bowK += Math.sign(want - bowK) * Math.min(Math.abs(want - bowK), dt * (want ? 0.45 : 0.6))
-    const drawn = Math.floor(bowK * (SEGS + 1))
-    const step = Math.PI / SEGS
-    BANDS.forEach((_, b) => {
-      const r = BOW_R - b * 5.2
-      for (let s = 0; s < SEGS; s++) {
-        const i = b * SEGS + s
-        if (s >= drawn) { bow.place(i, 0, -9999, 0); continue }
-        const a = Math.PI - (s + 0.5) * step
-        tmp.set(bowAt.x, bowAt.y + Math.sin(a) * r, bowAt.z + Math.cos(a) * r)
-        quat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -a)
-        bow.placeQ(i, tmp, quat, 3, 5, r * step + 0.6)
-      }
-    })
-    bow.commit(false)
-  }
-
   // ── balloons in the far sky ──────────────────────────────────────────────
   const balloons: { g: THREE.Group; a0: number; ph: number }[] = []
-  ;[[0xe04848, 0xfff2d6], [0x3fb8a8, 0xfff2d6]].forEach(([a, b], k) => {
+  ;[[0xe04848, 0xfff2d6], [0x3fb8a8, 0xfff2d6], [0xf2a541, 0xfff2d6], [0x8c6ad8, 0xfff2d6]].forEach(([a, b], k) => {
     const g = new THREE.Group()
     const widths = [3, 5.2, 6, 5.6, 4.4, 2.6]
     widths.forEach((w, i) => g.add(kit.box(w, 1.5, w, i % 2 ? b : a, 0, 6 + i * 1.5, 0)))
     g.add(kit.box(1.6, 1.2, 1.6, 0x7a5a3a, 0, 2.2, 0))
     g.add(kit.box(0.15, 3.4, 0.15, 0x3a2a1a, -0.6, 4.4, -0.6), kit.box(0.15, 3.4, 0.15, 0x3a2a1a, 0.6, 4.4, 0.6))
+    g.scale.setScalar(1.7)
     root.add(g)
-    balloons.push({ g, a0: k * Math.PI + 0.6, ph: k * 2.1 })
+    balloons.push({ g, a0: k * Math.PI * 0.5 + 0.6, ph: k * 2.1 })
   })
   const tickBalloons = (t: number): void => {
     for (const b of balloons) {
       const a = b.a0 + t * 0.025
-      b.g.position.set(centre.x + Math.cos(a) * 330, 96 + Math.sin(t * 0.4 + b.ph) * 4, centre.z + Math.sin(a) * 330)
+      b.g.position.set(centre.x + Math.cos(a) * 250, 90 + Math.sin(t * 0.4 + b.ph) * 4, centre.z + Math.sin(a) * 250)
       b.g.rotation.y = t * 0.1
     }
   }
@@ -275,7 +246,6 @@ export function buildRevealShow(kit: Kit, root: THREE.Group, islands: Island[], 
       tickGlints(t, dt, k)
       tickCurls(t, dt, from, k)
       tickPetals(t, dt, from, k)
-      tickBow(dt, k)
       tickBalloons(t)
       tickStars(t, dt, k)
     },

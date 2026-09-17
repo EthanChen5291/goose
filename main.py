@@ -160,7 +160,7 @@ def _show_loading_screen(screen, clock, duration=0.35):
 CANON_PATH = "assets/audios/canon/"
 CUSTOM_PATH = "assets/audios/custom/"
 SONG_NAMES = [
-    "Scorpion.mp3",
+    "Luigi Boccherini_ Minuetto (classical).mp3",
     "Playful Massacre.mp3", 
     "Decisive Battle.mp3", 
     "Takedown - Huntrix.mp3", 
@@ -183,11 +183,11 @@ SONG_NAMES = [
     "Waltz.mp3",
     "empty space - Flow 1.wav",
     "jester - Flow 1.wav",
-    "noki_bamsam_file.wav",
-    "noki_finalfight2v1 - Flow 1.wav",
-    "noki_heartmetoo_file.wav",
-    "noki_lastmeow_file.wav",
-    "noki_ramjam_file.wav",
+    "Freedom Dive.mp3",
+    "Dimrain47 - At the Speed of Light.mp3",
+    "Song That Might Play When You Fight Sans.mp3",
+    "Main Theme - Super Smash Bros_ Brawl.mp3",
+    "Scorpion.mp3",
     "noki_strangeuwa_file.wav"
 ]
 

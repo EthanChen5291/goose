@@ -15,6 +15,7 @@
  * brightens it.
  */
 import * as THREE from 'three'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { OCEAN_Y, LANDING_GRASS, Kit, CellField, blob, buildGround, rockUnder, mixHex, clamp01 } from './island_kit'
 import type { Island, Palette, BiomeCtx, CamPose } from './island_kit'
 import { BIOMES } from './biomes'
@@ -22,6 +23,7 @@ import type { Biome } from './biomes'
 import { rng } from './goose_world'
 import { buildRevealShow } from './reveal_fx'
 import { buildHorizon } from './horizon'
+import { buildSky } from './sky'
 
 /** where each biome hangs, in the order of `BIOMES` */
 // all of them under the line the goose flies (the plates' height): the drone comes in over the archipelago, never under it
@@ -38,8 +40,8 @@ const PLACES: [number, number, number][] = [
 const LINKS: [number, number][] = [[0, 1], [1, 2], [2, 3], [0, 4], [4, 5], [5, 6], [3, 6], [0, 2]]
 /** the wall of cloud past the meadow's edge, the one the goose went through */
 export const WALL = { x: 230, y0: -80, y1: 110, z0: -300, z1: 300 }
-/** where the wall's hole is: the feet of the bird, world space */
-export interface Hole { y: number; z: number }
+/** where the wall's hole is — the feet of the bird, world space — and its shape: the bird's own outline, `dy` up from the feet, `dz` across */
+export interface Hole { y: number; z: number; shape: (dy: number, dz: number) => boolean; plateW: number; plateT: number }
 
 export interface Archipelago {
   root: THREE.Group
@@ -54,6 +56,8 @@ export interface Archipelago {
   flash: (from: THREE.Vector3) => number
   /** one frame; `show` is 1 through the reveal and a fraction on the map, and is what the sky's life is scaled by */
   tick: (t: number, dt: number, from: THREE.Vector3, show: number) => void
+  /** the dome and the far strip: shown or not, round the camera, in this light, washed by the whiteout */
+  sky: (on: boolean, from: THREE.Vector3, pal: Palette, sunDir: THREE.Vector3, wash: number) => void
 }
 
 export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: string) => void, hole: Hole): Archipelago {
@@ -152,21 +156,62 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
   }
 
   // ── the cloud ───────────────────────────────────────────────────────────
-  // lit from above like everything else, but never dark underneath: a cloud's
-  // shadow side is still bright, so it glows a little of its own
+  // lit from above like everything else, but never dark on any side: the sun
+  // sits behind the wall from the meadow, so the faces the chase sees are all
+  // shadow side, and a cloud's shadow side is still nearly white — it glows
+  // most of its own light, and the sun only whitens the tops
   const cloudMat = kit.base.clone()
   cloudMat.color.setHex(0xffffff)
-  cloudMat.emissive.setHex(0x8fa0b4)
+  cloudMat.emissive.setHex(0xd4dce6)
   const clouds: { g: THREE.Group; speed: number }[] = []
+  /**
+   * A cloud: lumps of box merged into one mesh, in one of four shapes —
+   * a puff (a row of lumps rising to a dome on a flat base), a stratus (long
+   * thin slabs staggered along), a tower (a stack narrowing as it climbs),
+   * or wisps (thin shreds scattered loose) — no two the same.
+   */
   const cloud = (x: number, y: number, z: number, big: number): void => {
-    const g = new THREE.Group()
-    const w = (8 + q() * 12) * big
-    const dims: [number, number, number, number, number, number][] = [[w, 3 * big, 5 * big, 0, 0, 0], [w * 0.6, 3 * big, 4 * big, w * 0.3, 2 * big, 0.5], [w * 0.5, 2.5 * big, 4 * big, -w * 0.35, 1.5 * big, -0.5]]
-    for (const [pw, ph, pd, px, py, pz] of dims) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(pw, ph, pd), cloudMat)
-      m.position.set(px, py, pz)
-      g.add(m)
+    const parts: THREE.BufferGeometry[] = []
+    const lump = (pw: number, ph: number, pd: number, px: number, py: number, pz: number): void => {
+      const geo = new THREE.BoxGeometry(pw, ph, pd)
+      geo.translate(px, py, pz)
+      parts.push(geo)
     }
+    const kind = q()
+    const w = (8 + q() * 12) * big
+    if (kind < 0.45) {
+      // the puff
+      const n = 3 + Math.floor(q() * 4)
+      lump(w * 1.1, 1.5 * big, (4 + q() * 2) * big, 0, 0, 0)
+      for (let i = 0; i < n; i++) {
+        const u = n > 1 ? i / (n - 1) : 0.5
+        const dome = 1 - (2 * u - 1) ** 2
+        const lw = (w / n) * (1.2 + q() * 0.8), lh = (1.5 + dome * 2.5 + q() * 1) * big
+        lump(lw, lh, (3 + q() * 3) * big, (u - 0.5) * w * 0.9, 0.5 * big + lh * 0.4 + dome * 1.2 * big, (q() - 0.5) * 2 * big)
+      }
+    } else if (kind < 0.7) {
+      // the stratus: long, thin, strung out
+      const n = 2 + Math.floor(q() * 2)
+      for (let i = 0; i < n; i++) lump(w * (1.6 + q() * 0.8), (1.2 + q() * 0.6) * big, (2.5 + q() * 1.5) * big, (i - (n - 1) / 2) * w * 0.7 + (q() - 0.5) * w * 0.3, i * 0.9 * big + (q() - 0.5) * big, (q() - 0.5) * 3 * big)
+    } else if (kind < 0.85) {
+      // the tower: a stack that narrows as it climbs, leaning a little
+      const n = 4 + Math.floor(q() * 3)
+      let py = 0
+      for (let i = 0; i < n; i++) {
+        const k = 1 - (i / n) * 0.6
+        const lh = (2 + q() * 1.5) * big
+        lump(w * k * (0.8 + q() * 0.4), lh, (4 + q() * 2) * big * k, (q() - 0.5) * w * 0.3 + i * 0.4 * big, py + lh / 2, (q() - 0.5) * 2 * big)
+        py += lh * 0.8
+      }
+    } else {
+      // wisps: shreds scattered loose
+      const n = 4 + Math.floor(q() * 3)
+      for (let i = 0; i < n; i++) lump((3 + q() * 4) * big, (0.6 + q() * 0.6) * big, (1.5 + q() * 2) * big, (q() - 0.5) * w * 1.4, q() * 3 * big, (q() - 0.5) * 6 * big)
+    }
+    const g = new THREE.Group()
+    const m = new THREE.Mesh(mergeGeometries(parts), cloudMat)
+    for (const pg of parts) pg.dispose()
+    g.add(m)
     g.position.set(x, y, z)
     root.add(g)
     clouds.push({ g, speed: 0.4 + q() * 0.8 })
@@ -205,30 +250,21 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
   }
 
   // ── the horizon: what is out past the islands, every way ───────────────
-  buildHorizon(kit, root, q, cloudMat)
+  buildHorizon(kit, root, q, (x, y, z, big) => { cloud(x, y, z, big); clouds[clouds.length - 1].speed = 0 })
+  const sky = buildSky(scene, root, new THREE.Vector3(710, 0, 20), 'img/horizon.png')
 
   // ── the wall, and the hole the bird left in it ──────────────────────────
-  // A curtain of cloud across the way, with a bird-shaped hole punched through
-  // it at plate height (wings out, feet down, the plate a slot underneath) —
-  // the islands show through the hole first; as the drone reaches it the
-  // cloud round the hole slides aside and the whole sky opens.
-  const S = 2.2
-  /** the splayed bird, seen from the front: y up from its feet, z across, in goose heights */
-  const bird = (y: number, z: number): boolean => {
-    const ell = (cy: number, cz: number, ry: number, rz: number) => ((y - cy) / ry) ** 2 + ((z - cz) / rz) ** 2 < 1
-    const az = Math.abs(z)
-    if (ell(3.0, 0, 1.8, 2.6)) return true
-    if (y > 4.0 && y < 7.4 && az < 0.8) return true
-    if (ell(8.1, 0.3, 1.1, 1.3)) return true
-    if (y > 7.9 && y < 8.7 && z > 1.2 && z < 2.7) return true
-    if (az > 1.8 && az < 6.8) { const wy = 3.6 + (az - 1.8) * 0.22; if (Math.abs(y - wy) < (az > 5.6 ? 0.9 : 0.5)) return true }
-    if (y > -0.2 && y < 1.6 && Math.abs(az - 1.0) < 0.5) return true
-    return y > -0.2 && y < 0.35 && az < 2.4 && az > 0.4
-  }
+  // A curtain of cloud across the way, with the bird's own outline punched
+  // through it at plate height (its real size, wings out, the plate a slot
+  // underneath), cut in cells fine enough to keep the shape — the islands
+  // show through it first; as the drone reaches it the cloud round the hole
+  // slides aside and the whole sky opens.
   const inHole = (y: number, z: number): boolean =>
-    bird((y - hole.y) / S, (z - hole.z) / S) || (Math.abs(z - hole.z) < 8 && y > hole.y - 2.2 && y < hole.y - 0.2)
+    hole.shape(y - hole.y, z - hole.z) || (Math.abs(z - hole.z) < hole.plateW / 2 + 0.3 && y > hole.y - hole.plateT - 0.3 && y < hole.y + 0.1)
   const HY = hole.y + 8, HZ = hole.z
   const FINE_R = 46
+  /** the patch of finest cells round the bird itself */
+  const BIRD_Y = hole.y + 2.8, BIRD_R = 9.5
   interface WallCell { f: CellField; i: number; x: number; y: number; z: number; sx: number; sy: number; sz: number; dy: number; dz: number; d: number }
   const wallCells: WallCell[] = []
   const wallCell = (f: CellField, i: number, x: number, y: number, z: number, sx: number, sy: number, sz: number): void => {
@@ -252,12 +288,23 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
   const fine: [number, number, number][] = []
   for (let y = HY - FINE_R; y <= HY + FINE_R; y += 2) for (let z = HZ - FINE_R; z <= HZ + FINE_R; z += 2) {
     if (Math.hypot(y - HY, z - HZ) > FINE_R + 2) continue
+    if (Math.hypot(y - BIRD_Y, z - HZ) < BIRD_R - 1.5) continue
     if (inHole(y, z)) continue
     fine.push([WALL.x - 6 - lump(y, z) * 10 + (q() - 0.5) * 6, y, z])
   }
   const fineF = new CellField(fine.length, 1, 1, 1, cloudMat)
   fine.forEach(([x, y, z], i) => wallCell(fineF, i, x, y, z, 6 + q() * 5, 2.4 + q() * 0.8, 2.4 + q() * 0.8))
   root.add(fineF.mesh)
+  // the finest cells, half a unit, right round the bird: none where it went
+  const finest: [number, number, number][] = []
+  for (let y = BIRD_Y - BIRD_R; y <= BIRD_Y + BIRD_R; y += 0.5) for (let z = HZ - BIRD_R; z <= HZ + BIRD_R; z += 0.5) {
+    if (Math.hypot(y - BIRD_Y, z - HZ) > BIRD_R) continue
+    if (inHole(y, z)) continue
+    finest.push([WALL.x - 5 - lump(y, z) * 6 + (q() - 0.5) * 2, y, z])
+  }
+  const finestF = new CellField(finest.length, 1, 1, 1, cloudMat)
+  finest.forEach(([x, y, z], i) => wallCell(finestF, i, x, y, z, 3 + q() * 2, 0.62 + q() * 0.2, 0.62 + q() * 0.2))
+  root.add(finestF.mesh)
   // fluff on the near face, so the curtain is not a flat wall
   const fluff: [number, number, number][] = []
   for (let y = WALL.y0; y <= WALL.y1; y += 7) for (let z = WALL.z0; z <= WALL.z1; z += 7) {
@@ -275,7 +322,7 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
       const shift = k * 34 * clamp01(1 - (c.d - 10) / 64)
       c.f.place(c.i, c.x, c.y + c.dy * shift, c.z + c.dz * shift, c.sy, c.sx, c.sz)
     }
-    coarseF.commit(false); fineF.commit(false); fluffF.commit(false)
+    coarseF.commit(false); fineF.commit(false); finestF.commit(false); fluffF.commit(false)
   }
   partWall(0)
   // and once the drone is through and past it, the curtain is gone: from out over the islands the way back is open sky
@@ -284,7 +331,7 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
   const showWall = (on: boolean): void => {
     if (on === wallOn) return
     wallOn = on
-    coarseF.mesh.visible = fineF.mesh.visible = fluffF.mesh.visible = on
+    coarseF.mesh.visible = fineF.mesh.visible = finestF.mesh.visible = fluffF.mesh.visible = on
   }
 
   // ── the mainland's edge: rock under the meadow, down to the sea ─────────
@@ -379,5 +426,6 @@ export function buildArchipelago(kit: Kit, scene: THREE.Scene, cue: (name: strin
       })
       showFx.tick(t, dt, from, show)
     },
+    sky: sky.set,
   }
 }
