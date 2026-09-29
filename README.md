@@ -2,8 +2,6 @@
 
 # goose
 
-**A rhythm-typing game. Words fall on the beat; every one you land is a goose hitting something.**
-
 [![Builds](https://img.shields.io/badge/builds-web%20%C2%B7%20desktop%20%C2%B7%20unity-black.svg)](#quick-start)
 [![Engine](https://img.shields.io/badge/charts-librosa%20audio%20analysis-green.svg)](#how-it-works)
 [![Tests](https://img.shields.io/badge/tests-make%20test-lightgrey.svg)](#quick-start)
@@ -14,19 +12,19 @@
 
 ## Overview
 
-Pick a song, a difficulty, and a mode. Songs are analysed once and charted onto a four-lane highway, one lane per hand zone of the keyboard, so every note lands on the audible beat.
+Pick a song and a difficulty. Songs are analysed once and charted to the beat, so every note lands on the audible beat.
 
-## How it works
+## Gameplay
 
-- **Words.** Whole words fall as notes. Land them and the goose slaps, pecks, or punches whatever the level sent; miss and it is their turn.
-- **Duel.** Third-person in 3D. Each note is an attack whose shape tells you the key: `D`/`K` sidestep, `F` duck, `Space` jump, `J` peck it back.
-- **Map.** Six stones per world, flags on the ones you have cleared.
+The camera sits behind the goose on a runway in the level's sky, the enemy at the far end throwing the song at you. Each note is an attack whose shape tells you the key: `D`/`K` sidestep a laser wall, `F` flatten under a blade, `Space` jump a floor wave, `J` peck an orb back. Every dodge answers with a bolt; a miss knocks the goose back and costs HP.
+
+Between fights is the world: six stones along the path per world, flags on the ones you have cleared, the goose standing on your pick.
 
 Scoring is normalised to 1,000,000: 70% accuracy, 20% best combo, 10% clean words. A wrong key is a slip, never a broken combo. `Tab` on the results screen opens the typing coach.
 
-| Words mode | Duel mode |
+| The world | The duel |
 |---|---|
-| ![](docs/img/words.png) | ![](docs/img/duel.png) |
+| ![](docs/img/map.png) | ![](docs/img/duel.png) |
 
 ## Quick start
 
