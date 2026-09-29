@@ -8,11 +8,11 @@
 
 </div>
 
-![Title screen](docs/img/title.png)
-
-![The islands, on the flight from the menu to the map](docs/img/islands.png)
-
 <table>
+  <tr>
+    <td width="50%"><img src="docs/img/title.png" alt="Title screen"></td>
+    <td width="50%"><img src="docs/img/islands.png" alt="The islands, on the flight from the menu to the map"></td>
+  </tr>
   <tr>
     <td width="50%"><img src="docs/img/map.png" alt="The world map"></td>
     <td width="50%"><img src="docs/img/duel.png" alt="A duel"></td>
@@ -27,5 +27,3 @@ make web        # generate assets, then the Vite dev server
 make play       # the desktop build (pygame), no generation step
 make test       # Python and web suites
 ```
-
-Song analysis is cached under your user cache directory; `make clean-cache` drops it. The Unity port lives under `Goose/` with its own `make unity-*` targets.
