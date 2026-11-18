@@ -1,27 +1,6 @@
-# Python
 venv/
 __pycache__/
-*.pyc
-.pytest_cache/
-
-# native builds
 *.dylib
 *.so
-
-# editors and the OS
-.DS_Store
-.vscode/
-
-# scratch: recordings, references and anything dropped in the root to look at.
-# Only the root — assets/animations keeps the .mov sources its frames come from.
-web/.scratch/
-.scratch/
-/*.mp4
-/*.MP4
-/*.mov
-/*.mp3
-/*.wav
-
-# node, wherever it lands (web/.gitignore covers the client's derived assets)
-node_modules/
-web/dist/
+*.pyc
+venv/

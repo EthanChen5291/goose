@@ -1,29 +1,116 @@
 <div align="center">
 
-# goose
+# Noki
 
-[![Builds](https://img.shields.io/badge/builds-web%20%C2%B7%20desktop%20%C2%B7%20unity-black.svg)](#quick-start)
-[![Engine](https://img.shields.io/badge/charts-librosa%20audio%20analysis-green.svg)](#quick-start)
-[![Tests](https://img.shields.io/badge/tests-make%20test-lightgrey.svg)](#quick-start)
+**A rhythm-typing game: type the words on the beat.**
+
+[![Engine](https://img.shields.io/badge/engine-pygame-black.svg)](#quick-start)
+[![Charts](https://img.shields.io/badge/charts-librosa%20audio%20analysis-green.svg)](#how-it-works)
+[![Tests](https://img.shields.io/badge/tests-pytest-lightgrey.svg)](#tests)
+[![Next](https://img.shields.io/badge/next-goose%20branch-orange.svg)](../../tree/goose)
 
 </div>
 
-<table>
-  <tr>
-    <td width="50%"><img src="docs/img/title.png" alt="Title screen"></td>
-    <td width="50%"><img src="docs/img/islands.png" alt="The islands, on the flight from the menu to the map"></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="docs/img/map.png" alt="The world map"></td>
-    <td width="50%"><img src="docs/img/duel.png" alt="A duel"></td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/media/noki-intro.gif" width="728" alt="Noki's hand-drawn intro animation: the cat looks around, then the title appears">
+</p>
+
+## Overview
+
+Words fall down a four-lane highway in time with the music, one lane per hand zone of the keyboard, and you type them on the beat. Noki, the cat, stands on the line.
+
+Noki analyses a song's audio once, builds a chart from its beats and accents, and caches it.
+
+> This branch is Noki as it last shipped. The game has since been rebuilt as **goose** (web, desktop and Unity builds), which lives on the [`goose`](../../tree/goose) branch.
 
 ## Quick start
 
-```sh
-python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
-make web        # generate assets, then the Vite dev server
-make play       # the desktop build (pygame), no generation step
-make test       # Python and web suites
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+python3 main.py
 ```
+
+Pick a song, a difficulty (Easy · Fair · Hard · Demon) and a mode:
+
+- **Words** — the Highway. Whole words fall as Noki notes (the game's own note art); the strong beats are the colored notes with the glow, off-beats are plain circles. Where the song trades phrases a duet *section* opens: left hand plays the beat, right hand plays the tune, no words.
+- **Letters** — osu!-style: one letter per circle on a field split into hands and rows, approach rings, follow lines, HP instead of hearts.
+
+A song starts with a count-in: the clock runs first, the beat rows and the first word are already falling, and the music begins when chart time reaches the lead-in, so every note lands on the audible beat.
+
+In play: `Esc` pauses, `Space` starts Petal Rush when the bar is half full. On the results screen `Tab` opens the typing coach (a keyboard heatmap, three plain sentences, one thing to try).
+
+## How it works
+
+```
+┌──────────────────────────────────────────────┐
+│  SKELETON     one decode → beat grid, accents│
+└──────────────────────┬───────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────┐
+│  CELLS        slots by section energy        │
+└──────────────────────┬───────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────┐
+│  WORDS        whole words matched to slots   │
+└──────────────────────┬───────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────┐
+│  CLOCK        one clock, anchored to music   │
+└──────────────────────┬───────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────┐
+│  JUDGMENT     ms windows, signed offsets     │
+└──────────────────────┬───────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────┐
+│  COACH        heatmap, three sentences, a tip│
+└──────────────────────────────────────────────┘
+```
+
+The chart generator ("Skeleton & Cells") is deterministic. It decodes a song once into a beat grid with per-sixteenth band accents (kick, snare, hat, vocal), fills cells by section energy with the loudest hits first, leaves a rest after every word, and matches whole words to the slot count. Charts are cached by song, word list, difficulty and generator version.
+
+Charts for the built-in songs ship in `assets/charts/` (regenerate with `tools/prechart.py` after changing the generator). Everything else is cached under the user cache directory (`~/Library/Caches/Noki` on macOS), so a song is analysed once.
+
+## Scoring
+
+Score is normalized to 1,000,000: 70 % accuracy (PERFECT 1.0 · GREAT 0.7 · OK 0.3), 20 % best combo, 10 % clean words. Grades are by accuracy (SS 99.5 % with no miss · S 95 · A 90 · B 80 · C 70).
+
+A wrong key is a slip: it never consumes the note and never breaks the combo.
+
+## Tests
+
+```bash
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3 -m pytest -q tests
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3 tools/render_preview.py "assets/audios/canon/noki_tutorial_file.wav" classic out/ 8,20,45 [words|letters]
+```
+
+The second command is a headless preview: it charts a song and renders frames to PNG.
+
+## Repository
+
+```
+charting/               the chart generator, deterministic and cached
+  skeleton.py           one decode → beat grid, per-sixteenth band accents, onset times, slot selection
+  engine.py             cells by section energy, slots loudest-hit first, a rest after every word
+  words.py              the word pool (common, fun, school-safe, 2–9 letters)
+  duet.py               duet section detection and the per-tier trade/echo/weave planner
+  letters.py            Letters-mode planner (ergonomic letter assignment, no words)
+  __init__.py           build_chart(): chart cache keyed by song + words + difficulty + generator version
+game/
+  clock.py              ChartClock: the one clock, anchored when the music starts, pause inside
+  rhythm.py             judgment core: fixed-ms windows (±75 / 150 / 225 ms × tier), signed offsets, slips, holds, hit log
+  layout.py             every play-screen number in 1920×1080 design units, scaled to fill the window
+  keyboard.py           lanes, fingers, hands, mirror keys
+  highway.py            the Highway renderer (grid, orbs, connectors, word stack, HUD, Noki, duet glow)
+  letters_renderer.py   the Letters-mode renderer
+  play.py               PlaySession: load → play → pause → results
+  sprites.py            fonts (Tacobae for display), the note art and press animation, Noki frames
+  settings.py           settings.json in the user config dir
+  coach/                typing coach: stats fold, tip library, results panel
+tools/                  render_preview.py (headless preview), prechart.py (pre-chart the built-in songs)
+tests/                  pytest suite (judgment, layout, charting, end-to-end session)
+web/                    the TypeScript port in progress (see web/PORT.md)
+```
+
+The legacy engine (`game/engine.py` and `game/rendering/`) is kept for reference and is no longer used by `main.py`.

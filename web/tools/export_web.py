@@ -22,7 +22,6 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import NamedTuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.dirname(HERE)
@@ -42,36 +41,6 @@ FONTS = [
     ("noki/AtkinsonHyperlegible-Bold.ttf", "AtkinsonHyperlegible-Bold.ttf"),
     ("noki/ArchivoBlack-Regular.ttf", "ArchivoBlack-Regular.ttf"),
     ("tacobae-font/Tacobae-pge2K.otf", "Tacobae.otf"),
-]
-class Cut(NamedTuple):
-    """One file out of assets/audios, and how it is cut for the web.
-
-    `start`/`dur` trim it, `peak_db` lifts its loudest sample to that level —
-    what a phone recording needs to sit beside sounds mastered near full scale.
-    """
-    src: str
-    out: str
-    start: float = 0.0
-    dur: float | None = None
-    peak_db: float | None = None
-
-
-# The menu theme.  The track is 165 bpm and its drop is its first beat, so the
-# cut starts there — the moment before it is room, not music — and runs a whole
-# 72 bars, which is every bar the track has.  Looping the file end to end is
-# then the whole of it, in time, with no silence to sit through.
-THEME_BPM = 165
-THEME = Cut(os.path.join("built-in", "goose.wav"), "theme.mp3",
-            start=0.3468, dur=72 * 4 * 60 / THEME_BPM)
-
-# The recorded effects.  The waddles open on a moment of room tone that lands as
-# a late footstep, so each starts at its first real step; -4.4 dBFS is the level
-# they shared with the synthesised kit, less the 15% they were asked to come down.
-EFFECTS: list[Cut] = [
-    Cut("effects/hitsound.mp3", "hitsound.mp3"),
-    Cut("effects/gooserun1.mp3", "gooserun1.mp3", start=0.115, peak_db=-4.4),
-    Cut("effects/gooserun2.mp3", "gooserun2.mp3", start=0.010, dur=2.305, peak_db=-4.4),
-    Cut("effects/gooserun3.mp3", "gooserun3.mp3", start=0.105, peak_db=-4.4),
 ]
 TIERS = ("journey", "classic", "master", "demon")
 MODES = ("words", "letters")
@@ -95,72 +64,27 @@ def song_path(name: str) -> str | None:
     return None
 
 
-def peak_gain_db(src: str, target_db: float) -> float:
-    """The gain that puts `src`'s loudest sample on `target_db`."""
-    out = subprocess.run(
-        ["ffmpeg", "-v", "info", "-i", src, "-af", "volumedetect", "-f", "null", "-"],
-        capture_output=True, text=True,
-    ).stderr
-    for line in out.splitlines():
-        if "max_volume:" in line:
-            return target_db - float(line.split("max_volume:")[1].split("dB")[0])
-    return 0.0
-
-
-def is_stale(src: str, dst: str, recipe: float = 0.0) -> bool:
-    """Does `dst` need rebuilding from `src`?
-
-    `recipe` is the mtime of whatever states the cut — the exporter itself.  A
-    trim edited there has to re-encode a file whose source has not moved, or the
-    edit silently never lands.
-    """
-    if not os.path.exists(dst):
-        return True
-    return os.path.getmtime(dst) < max(os.path.getmtime(src), recipe)
-
-
-def encode_args(src: str, dst: str, peak_db: float | None = None,
-                start: float = 0.0, dur: float | None = None, gain_db: float = 0.0) -> list[str]:
-    """The ffmpeg call that writes `dst`: the whole recipe, and nothing done yet.
-
-    Separate from running it so the cut can be read — and tested — without an
-    encoder, a source file or a wait.
-    """
-    cut: list[str] = []
-    if start:
-        cut += ["-ss", f"{start:.4f}"]
-    if dur is not None:
-        cut += ["-t", f"{dur:.4f}"]
-    lift: list[str] = []
-    if peak_db is not None:
-        # 40 Hz down is rumble the lift would only make louder; mono, like the rest of the kit
-        lift = ["-af", f"highpass=f=40,volume={gain_db:.1f}dB", "-ac", "1"]
-    return ["ffmpeg", "-v", "error", "-y", "-i", src, *cut, *lift,
-            "-codec:a", "libmp3lame", "-b:a", AUDIO_BITRATE, "-map_metadata", "-1", dst]
-
-
-def transcode(src: str, dst: str, peak_db: float | None = None,
-              start: float = 0.0, dur: float | None = None, recipe: float = 0.0) -> bool:
-    """Re-encode `src` to a web-sized mp3, trimmed to [`start`, `start` + `dur`].
-
-    With `peak_db` it is also folded to mono and lifted so its loudest sample
-    lands there — what a recorded effect needs to sit beside the synthesised
-    ones, which are mastered near full scale.  Returns whether it wrote anything.
-    """
-    if not is_stale(src, dst, recipe):
+def transcode(src: str, dst: str) -> bool:
+    if os.path.exists(dst) and os.path.getmtime(dst) >= os.path.getmtime(src):
         return False
-    gain = peak_gain_db(src, peak_db) if peak_db is not None else 0.0
-    subprocess.run(encode_args(src, dst, peak_db, start, dur, gain), check=True)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", src, "-codec:a", "libmp3lame",
+         "-b:a", AUDIO_BITRATE, "-map_metadata", "-1", dst],
+        check=True,
+    )
     return True
 
 
-# Animation strips from assets/animations the client still uses.  The cat is
-# gone: the goose, the enemies, the scenes and the effects are pixel art built
-# by tools/pixel_pack.py into public/px/, not strips from here.
-SHEETS: list[tuple[str, int]] = []
+# Animation strips the client needs.  `noki_bop` is the title screen's dancer and
+# the play screen's Noki; `noki_base_loop` is the one that sits beside the song
+# list; `left`/`right` are its eye-tracking turns.
+SHEETS = [("noki_bop", 420), ("noki_hurt", 420), ("noki_base_loop", 520),
+          ("left", 520), ("right", 520)]
 
-# Flat images the menus draw.  None now — the menus are the pixel kit.
-IMAGES: list[str] = []
+# Flat images the menus draw: the wordmark, the settings gear, the play triangle.
+IMAGES = ["noki_maintitle.png", "noki_settingsmain.png", "playbutton.png",
+          "noki_settingsbutton.png", "exitbutton.png", "leavebutton.png",
+          "spotlight.png"]
 
 
 def pack_sheet(name: str, height: int) -> dict | None:
@@ -258,51 +182,31 @@ def main() -> None:
         songs.append(entry)
         print(f"{name}: {len(entry['charts'])} charts")
 
-    # the menu theme beside the songs, and the recorded effects beside the
-    # synthesised ones tools/sfx_gen.py writes into audio/sfx
+    # the hitsound: one small file every run shares
     sfx_dir = os.path.join(AUDIO_OUT, "sfx")
     os.makedirs(sfx_dir, exist_ok=True)
-    if not args.charts_only:
-        for cut, out_dir in [(THEME, AUDIO_OUT)] + [(e, sfx_dir) for e in EFFECTS]:
-            src = os.path.join(ROOT, "assets", "audios", cut.src)
-            if not os.path.exists(src):
-                print("skip (missing)", cut.src)
-                continue
-            transcode(src, os.path.join(out_dir, cut.out), cut.peak_db, cut.start, cut.dur,
-                      recipe=os.path.getmtime(__file__))
+    hs = os.path.join(ROOT, "assets", "audios", "effects", "hitsound.mp3")
+    if os.path.exists(hs) and not args.charts_only:
+        transcode(hs, os.path.join(sfx_dir, "hitsound.mp3"))
 
     for src_rel, dst_name in FONTS:
         src = os.path.join(ROOT, "assets", "fonts", src_rel)
         if os.path.exists(src):
             shutil.copyfile(src, os.path.join(FONTS_OUT, dst_name))
 
-    # What the last run wrote.  `--charts-only` skips the art, and writing the
-    # index from an empty dict would drop every sheet and image out of it — the
-    # files stay on disk, the client stops being told they exist, and the menus
-    # quietly lose their animations while the hardcoded images keep working.
-    prev = {}
-    index_out = os.path.join(PUB, "index.json")
-    if os.path.exists(index_out):
-        try:
-            prev = json.load(open(index_out, encoding="utf-8"))
-        except Exception:
-            prev = {}
-
     # flat menu art, copied as-is
     img_out = os.path.join(PUB, "img")
     os.makedirs(img_out, exist_ok=True)
-    images = list(prev.get("images", []))
+    images = []
     if not args.charts_only:
-        images = []
         for fn in IMAGES:
             src_img = os.path.join(ROOT, "assets", "images", fn)
             if os.path.exists(src_img):
                 shutil.copyfile(src_img, os.path.join(img_out, fn))
                 images.append(fn)
 
-    sheets = dict(prev.get("sheets", {}))
+    sheets = {}
     if not args.charts_only:
-        sheets = {}
         import pygame
         pygame.init()
         pygame.display.set_mode((1, 1))
@@ -315,12 +219,6 @@ def main() -> None:
     with open(os.path.join(PUB, "index.json"), "w", encoding="utf-8") as f:
         json.dump({"generator": index_src.get("generator"), "songs": songs,
                    "sheets": sheets, "images": images}, f, indent=1)
-    # a sheet on disk that the index does not mention is a menu with no animation
-    missing = [f2[:-4] for f2 in sorted(os.listdir(img_out))
-               if f2.endswith(".png") and f2[:-4] in dict(SHEETS) and f2[:-4] not in sheets]
-    if missing:
-        print(f"WARNING: {', '.join(missing)} are on disk but not in the index — "
-              f"the menus will show no animation.  Re-run without --charts-only.")
 
     audio_mb = sum(os.path.getsize(os.path.join(AUDIO_OUT, f))
                    for f in os.listdir(AUDIO_OUT) if f.endswith(".mp3")) / 1e6
